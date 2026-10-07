@@ -7,6 +7,7 @@ import type { ChannelMessageActionContext } from "openclaw/plugin-sdk/channel-co
 import { isRecord } from "openclaw/plugin-sdk/string-coerce-runtime";
 import { resolveGoogleChatAccount } from "./accounts.js";
 import { sendGoogleChatMessage } from "./api.js";
+import { formatGoogleChatText } from "./format.js";
 import { resolveGoogleChatOutboundSpace } from "./targets.js";
 
 const OUTBOUND_MEDIA_KEYS = ["media", "mediaUrl", "path", "filePath", "fileUrl"] as const;
@@ -69,7 +70,7 @@ export async function handleGoogleChatAction({
     const sent = await sendGoogleChatMessage({
       account,
       space,
-      text: content,
+      text: formatGoogleChatText(content),
       thread: threadId ?? undefined,
       assertDirectAdapterHandoff,
       onPlatformSendDispatch,

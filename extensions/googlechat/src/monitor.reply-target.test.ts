@@ -60,10 +60,15 @@ vi.mock("./monitor-routing.js", () => ({
   ),
 }));
 
-type GoogleChatTestReplyPayload = { text: string; replyToId?: string };
+type GoogleChatTestReplyPayload = { text: string; replyToId?: string; isStatusNotice?: boolean };
 type GoogleChatTestDelivery = {
   durable: (payload: GoogleChatTestReplyPayload, info: { kind: string }) => unknown;
   deliver: (payload: GoogleChatTestReplyPayload) => Promise<void>;
+  onDelivered: (
+    payload: GoogleChatTestReplyPayload,
+    info?: { kind: string },
+    result?: { visibleReplySent?: boolean; suppression?: { reason: string } },
+  ) => void;
 };
 
 beforeEach(() => {
@@ -166,6 +171,27 @@ const THREAD = `${SPACE}/threads/requested`;
 const TYPING = `${SPACE}/messages/typing`;
 
 describe("Google Chat automatic reply target reconciliation", () => {
+  it("uses the inbound thread only for the first visible reply in first mode", async () => {
+    const account = createAccount({ replyToMode: "first", typingIndicator: "none" });
+    const core = createCore({
+      run: async (delivery) => {
+        const status = { text: "Working", isStatusNotice: true };
+        delivery.onDelivered(status);
+        expect(delivery.durable({ text: "first" }, { kind: "final" })).toEqual({
+          to: SPACE,
+          replyToId: THREAD,
+          threadId: THREAD,
+        });
+        delivery.onDelivered({ text: "first" }, { kind: "final" }, { visibleReplySent: true });
+        expect(delivery.durable({ text: "second" }, { kind: "final" })).toEqual({
+          to: SPACE,
+          replyToId: null,
+        });
+      },
+    });
+    await processEvent({ account, core });
+  });
+
   it.each([undefined, "off"] as const)(
     "keeps automatic replies top-level with reply mode %s",
     async (replyToMode) => {
@@ -204,6 +230,7 @@ describe("Google Chat automatic reply target reconciliation", () => {
         await delivery.deliver(Object.freeze({ text: "two chunks", replyToId: SOURCE }));
       },
     });
+    vi.mocked(core.channel.text.resolveChunkMode).mockReturnValue("newline");
     apiMocks.sendGoogleChatMessage
       .mockResolvedValueOnce({ messageName: TYPING, threadName: deliveredThread })
       .mockResolvedValueOnce({
@@ -238,7 +265,7 @@ describe("Google Chat automatic reply target reconciliation", () => {
     failTyping?: boolean;
   }>([
     { label: "threaded after typing fails", thread: THREAD, failTyping: true },
-    { label: "explicit whitespace-decorated target", target: ` ${SOURCE} `, thread: SOURCE },
+    { label: "explicit whitespace-decorated target", target: ` ${SOURCE} `, thread: THREAD },
     { label: "unknown source message", event: createEvent({ messageName: null }), thread: SOURCE },
     { label: "direct message", event: createEvent({ spaceType: "DIRECT_MESSAGE" }) },
     { label: "unthreaded group", event: createEvent({ threadName: null }) },

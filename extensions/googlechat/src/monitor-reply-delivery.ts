@@ -10,6 +10,7 @@ import {
   sendGoogleChatMessage,
   updateGoogleChatMessage,
 } from "./api.js";
+import { formatGoogleChatTextChunks } from "./format.js";
 import type { GoogleChatCoreRuntime, GoogleChatRuntimeEnv } from "./monitor-types.js";
 
 export type GoogleChatTypingMessage = ReturnType<typeof createGoogleChatTypingMessage>;
@@ -130,7 +131,13 @@ export async function deliverGoogleChatReply(params: {
       deliveryThreadName = sent?.threadName?.trim() || deliveryThreadName;
     }
   };
-  const chunks = core.channel.text.chunkMarkdownTextWithMode(reply.text, chunkLimit, chunkMode);
+  // Match the outbound adapter: select paragraphs only in newline mode, then
+  // render each source block once into byte-bounded Google Chat text.
+  const blocks =
+    chunkMode === "newline"
+      ? core.channel.text.chunkMarkdownTextWithMode(reply.text, chunkLimit, chunkMode)
+      : [reply.text];
+  const chunks = blocks.flatMap((block) => formatGoogleChatTextChunks(block, chunkLimit));
   for (const chunk of chunks) {
     if (!chunk) {
       continue;
