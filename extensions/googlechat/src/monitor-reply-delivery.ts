@@ -165,11 +165,10 @@ export async function deliverGoogleChatReply(params: {
       } catch (error) {
         if (
           error instanceof GoogleChatApiError &&
-          error.status >= 400 &&
-          error.status < 500 &&
-          error.status !== 404
+          (error.status === 400 || error.status === 401 || error.status === 403)
         ) {
-          // A rejected edit cannot have replaced the placeholder; the turn may clean it up.
+          // Explicit request or authorization rejection cannot have replaced the placeholder.
+          // Timeouts and other statuses may still represent an accepted edit.
           params.onTypingMessageRejected?.();
         }
         if (!(error instanceof GoogleChatApiError) || error.status !== 404) {
