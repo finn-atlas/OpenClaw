@@ -4,6 +4,7 @@ import { PlatformMessageNotDispatchedError } from "openclaw/plugin-sdk/error-run
 import { afterAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { createRuntimeSpies } from "../../test-support/runtime-spies.js";
 import type { ResolvedGoogleChatAccount } from "./accounts.js";
+import { GoogleChatApiError } from "./api.js";
 import { createGoogleChatTypingMessage, deliverGoogleChatReply } from "./monitor-reply-delivery.js";
 import type { GoogleChatCoreRuntime } from "./monitor-types.js";
 
@@ -33,7 +34,7 @@ function createCore(params?: { chunks?: readonly string[] }) {
   return {
     channel: {
       text: {
-        resolveChunkMode: vi.fn(() => "markdown"),
+        resolveChunkMode: vi.fn(() => (params?.chunks ? "newline" : "length")),
         chunkMarkdownTextWithMode: vi.fn((text: string) => params?.chunks ?? [text]),
       },
       media: {
@@ -55,6 +56,100 @@ afterAll(() => {
 });
 
 describe("Google Chat reply delivery", () => {
+  it.each(["send", "typing update", "missing typing fallback"])(
+    "renders Markdown in the Google Chat dialect for %s",
+    async (delivery) => {
+      if (delivery === "missing typing fallback") {
+        mocks.updateGoogleChatMessage.mockRejectedValueOnce(
+          new GoogleChatApiError(404, "Google Chat API 404: message not found"),
+        );
+      }
+      const thread = "spaces/AAA/threads/root";
+      await deliverGoogleChatReply({
+        payload: {
+          text: "**Status:** [Launch plan](https://example.com/plan)\n\n- **Ready:** `GB`\n- *Pending*",
+          replyToId: thread,
+        },
+        account,
+        spaceId: "spaces/AAA",
+        runtime: createRuntimeSpies(),
+        core: createCore(),
+        config,
+        typingMessage:
+          delivery === "send"
+            ? undefined
+            : createGoogleChatTypingMessage({
+                messageName: "spaces/AAA/messages/typing",
+                requestedThreadName: thread,
+              }),
+      });
+
+      const text =
+        "*Status:* <https://example.com/plan|Launch plan>\n\n* *Ready:* `GB`\n* _Pending_";
+      if (delivery !== "send") {
+        expect(mocks.updateGoogleChatMessage).toHaveBeenCalledWith({
+          account,
+          messageName: "spaces/AAA/messages/typing",
+          text,
+        });
+      }
+      if (delivery !== "typing update") {
+        expect(mocks.sendGoogleChatMessage).toHaveBeenCalledExactlyOnceWith({
+          account,
+          space: "spaces/AAA",
+          thread,
+          text,
+        });
+      } else {
+        expect(mocks.sendGoogleChatMessage).not.toHaveBeenCalled();
+      }
+    },
+  );
+
+  it.each(["界", "a"])(
+    "keeps long %s bold spans formatted within the byte limit",
+    async (letter) => {
+      await deliverGoogleChatReply({
+        payload: { text: `**${letter.repeat(140)}**`, replyToId: "spaces/AAA/threads/root" },
+        account: { ...account, config: { textChunkLimit: 64 } },
+        spaceId: "spaces/AAA",
+        runtime: createRuntimeSpies(),
+        core: createCore(),
+        config,
+      });
+
+      const chunks = mocks.sendGoogleChatMessage.mock.calls.map(
+        ([params]) => params.text as string,
+      );
+      expect(chunks.length).toBeGreaterThan(1);
+      expect(chunks.every((chunk) => Buffer.byteLength(chunk, "utf8") <= 64)).toBe(true);
+      expect(chunks.every((chunk) => /^\*[界a]+\*$/u.test(chunk))).toBe(true);
+      expect(chunks.map((chunk) => chunk.slice(1, -1)).join("")).toBe(letter.repeat(140));
+    },
+  );
+
+  it("formats newline chunks once and preserves code literals", async () => {
+    const core = createCore({ chunks: ["**ready**", "`**literal**`"] });
+    await deliverGoogleChatReply({
+      payload: { text: "**ready**\n\n`**literal**`", replyToId: "spaces/AAA/threads/root" },
+      account,
+      spaceId: "spaces/AAA",
+      runtime: createRuntimeSpies(),
+      core,
+      config,
+    });
+
+    expect(core.channel.text.chunkMarkdownTextWithMode).toHaveBeenCalledWith(
+      "**ready**\n\n`**literal**`",
+      4000,
+      "newline",
+    );
+    expect(mocks.sendGoogleChatMessage.mock.calls.map(([params]) => params.text)).toEqual([
+      "*ready*",
+      "`**literal**`",
+    ]);
+  });
+
   it("does not resend the first chunk when the typing update result is ambiguous", async () => {
     const core = createCore({ chunks: ["first chunk", "second chunk"] });
     const runtime = createRuntimeSpies();

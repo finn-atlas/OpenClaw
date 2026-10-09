@@ -1,21 +1,22 @@
 import type { ReplyPayload } from "openclaw/plugin-sdk/reply-runtime";
 
-/**
- * Google Chat only accepts a thread resource (`spaces/x/threads/y`) as a reply
- * target. The automatic reply pipeline supplies the inbound *message* resource
- * (`spaces/x/messages/y`) instead, which delivery would read as an intentional
- * retarget and use to discard the typing placeholder. Reconcile that exact
- * source-message target to the effective reply-mode target before delivery,
- * leaving other targets untouched so explicit retargeting still works.
- */
-export function normalizeGoogleChatReplyTarget(params: {
+/** Resolve Google Chat's thread resource after core supplies the inbound message as its target. */
+export function resolveGoogleChatReplyThread(params: {
   payload: ReplyPayload;
   sourceMessageName?: string;
   replyThreadName?: string;
-}): ReplyPayload {
-  const sourceMessageName = params.sourceMessageName;
-  if (!sourceMessageName || params.payload.replyToId !== sourceMessageName) {
-    return params.payload;
+  replyToMode?: "off" | "first" | "all" | "batched";
+  hasThreadedReply: boolean;
+}): string | undefined {
+  const explicitTarget = params.payload.replyToId?.trim();
+  if (explicitTarget && explicitTarget !== params.sourceMessageName) {
+    return explicitTarget;
   }
-  return { ...params.payload, replyToId: params.replyThreadName };
+  if (params.payload.replyToCurrent === false) {
+    return undefined;
+  }
+  const mode = params.replyToMode ?? "off";
+  return mode === "all" || mode === "batched" || (mode === "first" && !params.hasThreadedReply)
+    ? params.replyThreadName
+    : undefined;
 }

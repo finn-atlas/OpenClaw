@@ -109,7 +109,19 @@ describe("googlechat message actions", () => {
     }
   });
 
-  it("sends text through the resolved space", async () => {
+  it.each([
+    { name: "plain text", message: "caption", rendered: "caption" },
+    {
+      name: "inline styles, links and code",
+      message: "**Ready** — [plan](https://example.com/plan)\n\n- *Pending*\n- `**literal**`",
+      rendered: "*Ready* — <https://example.com/plan|plan>\n\n* _Pending_\n* `**literal**`",
+    },
+    {
+      name: "heading and strike",
+      message: "## Status\n\n~~Outdated~~",
+      rendered: "*Status*\n\n~Outdated~",
+    },
+  ])("sends rendered text through the resolved space: $name", async ({ message, rendered }) => {
     const account = buildAccount();
     resolveGoogleChatAccount.mockReturnValue(account);
     resolveGoogleChatOutboundSpace.mockResolvedValue("spaces/AAA");
@@ -122,7 +134,7 @@ describe("googlechat message actions", () => {
       action: "send",
       params: {
         to: "spaces/AAA",
-        message: "caption",
+        message,
         threadId: "thread-1",
       },
       cfg: {},
@@ -136,7 +148,7 @@ describe("googlechat message actions", () => {
     expect(sendGoogleChatMessage).toHaveBeenCalledWith({
       account,
       space: "spaces/AAA",
-      text: "caption",
+      text: rendered,
       thread: "thread-1",
     });
     expectJsonResult(result, {
@@ -145,6 +157,22 @@ describe("googlechat message actions", () => {
       messageName: "spaces/AAA/messages/msg-1",
       threadName: "spaces/AAA/threads/thread-1",
     });
+  });
+
+  it("rejects a message that exceeds the one-request byte limit after formatting", async () => {
+    resolveGoogleChatAccount.mockReturnValue(buildAccount());
+    resolveGoogleChatOutboundSpace.mockResolvedValue("spaces/AAA");
+
+    await expect(
+      googlechatMessageActions.handleAction({
+        action: "send",
+        params: { to: "spaces/AAA", message: "a_b".repeat(8_000) },
+        cfg: {},
+        accountId: "default",
+      } as never),
+    ).rejects.toThrow("Google Chat action message exceeds 32000 UTF-8 bytes after formatting");
+
+    expect(sendGoogleChatMessage).not.toHaveBeenCalled();
   });
 
   it.each([
