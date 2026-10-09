@@ -16,7 +16,13 @@ export function resolveGoogleChatReplyThread(params: {
     return undefined;
   }
   const mode = params.replyToMode ?? "off";
-  return mode === "all" || mode === "batched" || (mode === "first" && !params.hasThreadedReply)
+  if (mode === "batched") {
+    // Core only supplies the source message target for an allowed batched reply.
+    return explicitTarget || params.payload.replyToCurrent === true
+      ? params.replyThreadName
+      : undefined;
+  }
+  return mode === "all" || (mode === "first" && !params.hasThreadedReply)
     ? params.replyThreadName
     : undefined;
 }

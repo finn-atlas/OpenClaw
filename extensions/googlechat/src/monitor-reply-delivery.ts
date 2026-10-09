@@ -43,6 +43,7 @@ export async function deliverGoogleChatReply(params: {
   statusSink?: (patch: { lastInboundAt?: number; lastOutboundAt?: number }) => void;
   typingMessage?: GoogleChatTypingMessage;
   onTypingMessageClaimed?: () => void;
+  onTypingMessageRejected?: () => void;
   onTextDelivered?: (messageName: string) => void;
 }): Promise<void> {
   const { payload, account, spaceId, runtime, core, config, statusSink } = params;
@@ -161,6 +162,15 @@ export async function deliverGoogleChatReply(params: {
         acceptedText.push({ id, text: chunk });
         params.onTextDelivered?.(id);
       } catch (error) {
+        if (
+          error instanceof GoogleChatApiError &&
+          error.status >= 400 &&
+          error.status < 500 &&
+          error.status !== 404
+        ) {
+          // A rejected edit cannot have replaced the placeholder; the turn may clean it up.
+          params.onTypingMessageRejected?.();
+        }
         if (!(error instanceof GoogleChatApiError) || error.status !== 404) {
           throw error;
         }

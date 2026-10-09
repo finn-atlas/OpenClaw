@@ -1,5 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { ResolvedGoogleChatAccount } from "./accounts.js";
+import { GoogleChatApiError } from "./api.js";
 import type { GoogleChatCoreRuntime, GoogleChatRuntimeEnv } from "./monitor-types.js";
 import "./monitor.js";
 import type { GoogleChatEvent } from "./types.js";
@@ -38,7 +39,8 @@ vi.mock("openclaw/plugin-sdk/routing", async (importOriginal) => ({
   resolveAgentRoute: inboundMocks.resolveAgentRoute,
 }));
 
-vi.mock("./api.js", () => ({
+vi.mock("./api.js", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("./api.js")>()),
   deleteGoogleChatMessage: apiMocks.deleteGoogleChatMessage,
   downloadGoogleChatMedia: apiMocks.downloadGoogleChatMedia,
   sendGoogleChatMessage: apiMocks.sendGoogleChatMessage,
@@ -192,6 +194,72 @@ describe("Google Chat automatic reply target reconciliation", () => {
       space: SPACE,
       text: "retargeted",
       thread: otherThread,
+    });
+  });
+
+  it.each([
+    {
+      label: "definitive rejected edit",
+      error: new GoogleChatApiError(403, "edit forbidden"),
+      deletes: true,
+    },
+    { label: "lost edit response", error: new Error("response lost"), deletes: false },
+  ])("keeps placeholder custody correct after a $label", async ({ error, deletes }) => {
+    const account = createAccount({ replyToMode: "all" });
+    const core = createCore({
+      run: async (delivery) => {
+        await expect(delivery.deliver({ text: "answer" })).rejects.toBe(error);
+      },
+    });
+    apiMocks.sendGoogleChatMessage.mockResolvedValueOnce({
+      messageName: TYPING,
+      threadName: THREAD,
+    });
+    apiMocks.updateGoogleChatMessage.mockRejectedValueOnce(error);
+
+    await processEvent({ account, core });
+
+    if (deletes) {
+      expect(apiMocks.deleteGoogleChatMessage).toHaveBeenCalledExactlyOnceWith({
+        account,
+        messageName: TYPING,
+      });
+    } else {
+      expect(apiMocks.deleteGoogleChatMessage).not.toHaveBeenCalled();
+    }
+  });
+
+  it("threads batched replies without threading other batched-mode output", async () => {
+    const account = createAccount({ replyToMode: "batched", typingIndicator: "none" });
+    const core = createCore({
+      run: async (delivery) => {
+        const toolReply = { text: "tool output" };
+        expect(delivery.durable(toolReply, { kind: "final" })).toEqual({
+          to: SPACE,
+          replyToId: null,
+        });
+        await delivery.deliver(toolReply);
+        const batchedReply = { text: "batched answer", replyToId: SOURCE };
+        expect(delivery.durable(batchedReply, { kind: "final" })).toEqual({
+          to: SPACE,
+          replyToId: THREAD,
+          threadId: THREAD,
+        });
+        await delivery.deliver(batchedReply);
+      },
+    });
+    await processEvent({ account, core });
+    expect(apiMocks.sendGoogleChatMessage).toHaveBeenNthCalledWith(1, {
+      account,
+      space: SPACE,
+      text: "tool output",
+      thread: undefined,
+    });
+    expect(apiMocks.sendGoogleChatMessage).toHaveBeenNthCalledWith(2, {
+      account,
+      space: SPACE,
+      text: "batched answer",
+      thread: THREAD,
     });
   });
 
