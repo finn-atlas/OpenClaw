@@ -304,6 +304,18 @@ function renderGoogleChatIR(ir: MarkdownIR, markers: GoogleChatMarkers): string 
   return emitGoogleChatLists(blockquotes, markers.list);
 }
 
+/** Renders a single action message without changing its one-request delivery contract. */
+export function formatGoogleChatText(text: string): string {
+  const prepared = prepareGoogleChatIR(text);
+  const rendered = renderGoogleChatIR(prepared.ir, prepared.markers);
+  if (Buffer.byteLength(rendered, "utf8") > GOOGLE_CHAT_FORMAT_PROFILE.chunk.limit) {
+    throw new Error(
+      "Google Chat action message exceeds 32000 UTF-8 bytes after formatting; split it into smaller messages.",
+    );
+  }
+  return rendered;
+}
+
 /** Renders CommonMark into byte-bounded Google Chat app-message chunks. */
 export function formatGoogleChatTextChunks(
   text: string,

@@ -45,9 +45,9 @@ const CHUNKS = [
 const core = {
   channel: {
     text: {
-      resolveChunkMode: () => "markdown",
-      // Deterministic 3-chunk split standing in for the core chunker; the
-      // chunker is not the changed surface, the per-chunk send loop is.
+      resolveChunkMode: () => "newline",
+      // Deterministic paragraph selection; production formatting still runs
+      // before the per-chunk HTTP send loop exercised below.
       chunkMarkdownTextWithMode: () => CHUNKS,
     },
   },
