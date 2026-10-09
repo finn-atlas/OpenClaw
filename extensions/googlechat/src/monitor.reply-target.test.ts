@@ -147,13 +147,14 @@ async function processEvent(params: {
   core: GoogleChatCoreRuntime;
   event?: GoogleChatEvent;
   runtime?: GoogleChatRuntimeEnv;
+  config?: Record<string, unknown>;
 }) {
   if (!routingMocks.processEvent) {
     throw new Error("Expected Google Chat webhook event processor registration");
   }
   await routingMocks.processEvent(params.event ?? createEvent(), {
     account: params.account,
-    config: {},
+    config: params.config ?? {},
     runtime: params.runtime ?? { error: vi.fn(), log: vi.fn() },
     core: params.core,
     mediaMaxMb: 10,
@@ -167,6 +168,47 @@ const THREAD = `${SPACE}/threads/requested`;
 const TYPING = `${SPACE}/messages/typing`;
 
 describe("Google Chat automatic reply target reconciliation", () => {
+  it("shows queued status in the typing message and removes it after a silent turn", async () => {
+    const account = createAccount({ replyToMode: "all" });
+    const core = createCore({ run: async () => {} });
+    apiMocks.sendGoogleChatMessage.mockResolvedValueOnce({
+      messageName: TYPING,
+      threadName: THREAD,
+    });
+
+    await processEvent({
+      account,
+      core,
+      config: { messages: { statusReactions: { enabled: true } } },
+    });
+
+    expect(apiMocks.updateGoogleChatMessage).toHaveBeenCalledWith({
+      account,
+      messageName: TYPING,
+      text: "👀 Received",
+    });
+    expect(apiMocks.deleteGoogleChatMessage).toHaveBeenCalledExactlyOnceWith({
+      account,
+      messageName: TYPING,
+    });
+  });
+
+  it("removes an unused typing placeholder when the turn ends without a reply", async () => {
+    const account = createAccount({ replyToMode: "all" });
+    const core = createCore({ run: async () => {} });
+    apiMocks.sendGoogleChatMessage.mockResolvedValueOnce({
+      messageName: TYPING,
+      threadName: THREAD,
+    });
+
+    await processEvent({ account, core });
+
+    expect(apiMocks.deleteGoogleChatMessage).toHaveBeenCalledExactlyOnceWith({
+      account,
+      messageName: TYPING,
+    });
+  });
+
   it("threads only the first visible answer in first mode", async () => {
     const account = createAccount({ replyToMode: "first", typingIndicator: "none" });
     const core = createCore({
