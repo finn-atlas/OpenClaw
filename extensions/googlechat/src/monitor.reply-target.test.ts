@@ -177,6 +177,11 @@ describe("Google Chat automatic reply target reconciliation", () => {
       deletes: true,
     },
     { label: "lost edit response", error: new Error("response lost"), deletes: false },
+    {
+      label: "timed-out edit response",
+      error: new GoogleChatApiError(408, "request timeout"),
+      deletes: false,
+    },
   ])("keeps placeholder custody correct after a $label", async ({ error, deletes }) => {
     const account = createAccount({ replyToMode: "all" });
     const core = createCore({
