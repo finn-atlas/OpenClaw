@@ -60,10 +60,15 @@ vi.mock("./monitor-routing.js", () => ({
   ),
 }));
 
-type GoogleChatTestReplyPayload = { text: string; replyToId?: string };
+type GoogleChatTestReplyPayload = { text: string; replyToId?: string; isStatusNotice?: boolean };
 type GoogleChatTestDelivery = {
   durable: (payload: GoogleChatTestReplyPayload, info: { kind: string }) => unknown;
   deliver: (payload: GoogleChatTestReplyPayload) => Promise<void>;
+  onDelivered: (
+    payload: GoogleChatTestReplyPayload,
+    info: { kind: string },
+    result: { visibleReplySent: boolean },
+  ) => void | Promise<void>;
 };
 
 beforeEach(() => {
@@ -189,6 +194,43 @@ describe("Google Chat automatic reply target reconciliation", () => {
     });
   });
 
+  it("threads only the first visible answer in first mode", async () => {
+    const account = createAccount({ replyToMode: "first", typingIndicator: "none" });
+    const core = createCore({
+      run: async (delivery) => {
+        const status = { text: "Working", isStatusNotice: true };
+        await delivery.onDelivered(status, { kind: "status" }, { visibleReplySent: true });
+        const first = { text: "first" };
+        expect(delivery.durable(first, { kind: "final" })).toEqual({
+          to: SPACE,
+          replyToId: THREAD,
+          threadId: THREAD,
+        });
+        await delivery.deliver(first);
+        await delivery.onDelivered(first, { kind: "final" }, { visibleReplySent: true });
+        const second = { text: "second" };
+        expect(delivery.durable(second, { kind: "final" })).toEqual({
+          to: SPACE,
+          replyToId: null,
+        });
+        await delivery.deliver(second);
+      },
+    });
+    await processEvent({ account, core });
+    expect(apiMocks.sendGoogleChatMessage).toHaveBeenNthCalledWith(1, {
+      account,
+      space: SPACE,
+      text: "first",
+      thread: THREAD,
+    });
+    expect(apiMocks.sendGoogleChatMessage).toHaveBeenNthCalledWith(2, {
+      account,
+      space: SPACE,
+      text: "second",
+      thread: undefined,
+    });
+  });
+
   it("keeps automatic replies top-level with reply mode off", async () => {
     const account = createAccount({ replyToMode: "off" });
     const payload = Object.freeze({ text: "top-level reply", replyToId: SOURCE });
@@ -224,6 +266,7 @@ describe("Google Chat automatic reply target reconciliation", () => {
         await delivery.deliver(Object.freeze({ text: "two chunks", replyToId: SOURCE }));
       },
     });
+    vi.mocked(core.channel.text.resolveChunkMode).mockReturnValue("newline");
     apiMocks.sendGoogleChatMessage
       .mockResolvedValueOnce({ messageName: TYPING, threadName: deliveredThread })
       .mockResolvedValueOnce({
