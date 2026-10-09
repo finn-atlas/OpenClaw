@@ -387,6 +387,7 @@ async function processGoogleChatEvent(
               }),
             deliver: async (payload, info) => {
               await activity?.stop();
+              const claimedTypingMessage = typingMessage;
               await deliverGoogleChatReply({
                 payload: { ...payload, replyToId: resolveReplyThreadName(payload) },
                 account,
@@ -398,6 +399,9 @@ async function processGoogleChatEvent(
                 typingMessage,
                 onTypingMessageClaimed: () => {
                   typingMessage = undefined;
+                },
+                onTypingMessageRejected: () => {
+                  typingMessage = claimedTypingMessage;
                 },
                 onTextDelivered: (name) => {
                   if (isProgressReply(payload, info?.kind)) {
