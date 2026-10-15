@@ -135,6 +135,56 @@ describe("googlechat message actions", () => {
     });
   });
 
+  it("renders message-tool Markdown for Google Chat before sending", async () => {
+    const account = buildAccount();
+    resolveGoogleChatAccount.mockReturnValue(account);
+    resolveGoogleChatOutboundSpace.mockResolvedValue("spaces/AAA");
+    sendGoogleChatMessage.mockResolvedValue({ messageName: "spaces/AAA/messages/msg-1" });
+
+    await googlechatMessageActions.handleAction({
+      action: "send",
+      params: {
+        to: "spaces/AAA",
+        message: "**Completed ✅**\n\nThe [GitHub UAM item](https://example.com/uam) is updated.",
+        threadId: "spaces/AAA/threads/source",
+      },
+      cfg: {},
+      accountId: "default",
+    } as never);
+
+    expect(sendGoogleChatMessage).toHaveBeenCalledWith({
+      account,
+      space: "spaces/AAA",
+      text: "*Completed ✅*\n\nThe <https://example.com/uam|GitHub UAM item> is updated.",
+      thread: "spaces/AAA/threads/source",
+    });
+  });
+
+  it("keeps long message-tool sends in the first Google Chat thread", async () => {
+    resolveGoogleChatAccount.mockReturnValue(buildAccount());
+    resolveGoogleChatOutboundSpace.mockResolvedValue("spaces/AAA");
+    sendGoogleChatMessage
+      .mockResolvedValueOnce({
+        messageName: "spaces/AAA/messages/msg-1",
+        threadName: "spaces/AAA/threads/new-thread",
+      })
+      .mockResolvedValueOnce({
+        messageName: "spaces/AAA/messages/msg-2",
+        threadName: "spaces/AAA/threads/new-thread",
+      });
+
+    await googlechatMessageActions.handleAction({
+      action: "send",
+      params: { to: "spaces/AAA", message: "x".repeat(33_000) },
+      cfg: {},
+      accountId: "default",
+    } as never);
+
+    expect(sendGoogleChatMessage).toHaveBeenCalledTimes(2);
+    expect(sendGoogleChatMessage.mock.calls[0]?.[0].thread).toBeUndefined();
+    expect(sendGoogleChatMessage.mock.calls[1]?.[0].thread).toBe("spaces/AAA/threads/new-thread");
+  });
+
   it.each([
     { action: "send", params: { to: "spaces/AAA", message: "caption", media: "remote.png" } },
     {
