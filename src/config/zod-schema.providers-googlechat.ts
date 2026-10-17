@@ -42,6 +42,7 @@ const GoogleChatAccountSchemaBase = z.strictObject({
   botUser: z.string().optional(),
   dm: z.strictObject({ enabled: z.boolean().optional() }).optional(),
   typingIndicator: z.enum(["none", "message", "reaction"]).optional(),
+  sessionThread: z.boolean().optional(),
 });
 
 export const GoogleChatConfigSchema = GoogleChatAccountSchemaBase.extend({

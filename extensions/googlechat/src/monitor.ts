@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { resolveAgentConfig } from "openclaw/plugin-sdk/agent-scope-runtime";
 import {
   formatInboundMediaUnavailableText,
@@ -129,6 +130,14 @@ async function processGoogleChatEvent(
       id: spaceId,
     },
   });
+  const replyThreadName = isGroup ? message.thread?.name : undefined;
+  // Session storage canonicalizes keys to lowercase. Hash the case-sensitive
+  // resource name and use the routeless :subsession: suffix instead of the
+  // generic :thread: suffix, which is interpreted as a physical reply target.
+  const dispatchSessionKey =
+    account.config.sessionThread === true && replyThreadName?.trim()
+      ? `${route.sessionKey}:subsession:${createHash("sha256").update(replyThreadName.trim()).digest("hex").slice(0, 16)}`
+      : route.sessionKey;
 
   const access = await applyGoogleChatInboundAccessPolicy({
     account,
@@ -143,7 +152,7 @@ async function processGoogleChatEvent(
     rawBody,
     contextBinding: {
       agentId: route.agentId,
-      sessionKey: route.sessionKey,
+      sessionKey: dispatchSessionKey,
       ...(message.name ? { messageId: message.name } : {}),
       inboundEventKind: "user_request",
     },
@@ -217,7 +226,10 @@ async function processGoogleChatEvent(
     ? space.displayName || `space:${spaceId}`
     : senderName || `user:${senderId}`;
   const timestampMs = resolveGoogleChatTimestampMs(event.eventTime);
-  const buildEnvelope = await createChannelInboundEnvelopeBuilderAsync({ cfg: config, route });
+  const buildEnvelope = await createChannelInboundEnvelopeBuilderAsync({
+    cfg: config,
+    route: { ...route, sessionKey: dispatchSessionKey },
+  });
   const body = buildEnvelope({
     channel: "Google Chat",
     from: fromLabel,
@@ -225,7 +237,6 @@ async function processGoogleChatEvent(
     body: rawBody,
   });
 
-  const replyThreadName = isGroup ? message.thread?.name : undefined;
   const ctxPayload = core.channel.inbound.buildContext({
     channelIngress: access.channelIngress,
     channel: "googlechat",
@@ -250,12 +261,14 @@ async function processGoogleChatEvent(
       dmScope: route.dmScope,
       accountId: route.accountId,
       routeSessionKey: route.sessionKey,
+      dispatchSessionKey,
     },
     reply: {
       to: `googlechat:${spaceId}`,
       originatingTo: `googlechat:${spaceId}`,
       replyToId: replyThreadName,
       replyToIdFull: replyThreadName,
+      messageThreadId: dispatchSessionKey === route.sessionKey ? undefined : replyThreadName,
     },
     message: {
       body,
@@ -332,7 +345,7 @@ async function processGoogleChatEvent(
         cfg: config,
         channel: "googlechat",
         accountId: route.accountId,
-        route: { agentId: route.agentId, sessionKey: route.sessionKey },
+        route: { agentId: route.agentId, sessionKey: dispatchSessionKey },
         ctxPayload,
         delivery: {
           durable: (payload, info) =>

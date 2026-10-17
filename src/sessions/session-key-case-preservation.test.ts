@@ -8,6 +8,8 @@ import {
   normalizeSessionKeyPreservingOpaquePeerIds,
   normalizeSessionPeerId,
   parseRawSessionConversationRef,
+  parseSessionDeliveryRoute,
+  parseThreadSessionSuffix,
   requiresFoldedSessionKeyAliasProof,
 } from "./session-key-utils.js";
 
@@ -32,6 +34,24 @@ function resolveEntry(key: string, value: SessionEntry, sessionKey = ROOM_MIXED_
 }
 
 describe("parseRawSessionConversationRef", () => {
+  it("keeps an opaque sub-session scope out of physical delivery addresses", () => {
+    const baseKey = "agent:main:googlechat:group:spaces/ROOM";
+    const scopedKey = `${baseKey}:subsession:0123456789abcdef`;
+    // Delivery parsing already folds this peer id; the new scope must not
+    // become part of that physical recipient or masquerade as a thread id.
+    expect(parseSessionDeliveryRoute(scopedKey)).toEqual(parseSessionDeliveryRoute(baseKey));
+    expect(parseRawSessionConversationRef(scopedKey)).toEqual({
+      channel: "googlechat",
+      kind: "group",
+      rawId: "spaces/ROOM",
+      prefix: "agent:main:googlechat:group",
+    });
+    expect(parseThreadSessionSuffix(scopedKey)).toEqual({
+      baseSessionKey: baseKey,
+      threadId: undefined,
+    });
+  });
+
   it("preserves empty segments inside opaque Matrix room ids", () => {
     expect(parseRawSessionConversationRef("agent:main:matrix:channel:!room:[2001:db8::1]")).toEqual(
       {
