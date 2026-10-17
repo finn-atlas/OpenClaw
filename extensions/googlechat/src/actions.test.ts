@@ -1,3 +1,4 @@
+import { isChannelPartialDeliveryError } from "openclaw/plugin-sdk/channel-inbound";
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 
 const inspectGoogleChatAccount = vi.hoisted(() => vi.fn());
@@ -183,6 +184,37 @@ describe("googlechat message actions", () => {
     expect(sendGoogleChatMessage).toHaveBeenCalledTimes(2);
     expect(sendGoogleChatMessage.mock.calls[0]?.[0].thread).toBeUndefined();
     expect(sendGoogleChatMessage.mock.calls[1]?.[0].thread).toBe("spaces/AAA/threads/new-thread");
+  });
+
+  it("reports the accepted prefix when a later message chunk fails", async () => {
+    resolveGoogleChatAccount.mockReturnValue(buildAccount());
+    resolveGoogleChatOutboundSpace.mockResolvedValue("spaces/AAA");
+    sendGoogleChatMessage
+      .mockResolvedValueOnce({
+        messageName: "spaces/AAA/messages/msg-1",
+        threadName: "spaces/AAA/threads/new-thread",
+      })
+      .mockRejectedValueOnce(new Error("second chunk failed"));
+
+    const error = await googlechatMessageActions
+      .handleAction({
+        action: "send",
+        params: { to: "spaces/AAA", message: "x".repeat(33_000) },
+        cfg: {},
+        accountId: "default",
+      } as never)
+      .catch((failure: unknown) => failure);
+
+    expect(isChannelPartialDeliveryError(error)).toBe(true);
+    if (!isChannelPartialDeliveryError(error)) {
+      throw new Error("expected partial delivery error");
+    }
+    expect(error.deliveryResult).toEqual({
+      messageIds: ["spaces/AAA/messages/msg-1"],
+      content: sendGoogleChatMessage.mock.calls[0]?.[0].text,
+      visibleReplySent: true,
+    });
+    expect(sendGoogleChatMessage).toHaveBeenCalledTimes(2);
   });
 
   it.each([
