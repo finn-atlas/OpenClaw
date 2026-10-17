@@ -217,6 +217,23 @@ describe("googlechat message actions", () => {
     expect(sendGoogleChatMessage).toHaveBeenCalledTimes(2);
   });
 
+  it("does not report a suppressed chunk as delivered", async () => {
+    resolveGoogleChatAccount.mockReturnValue(buildAccount());
+    resolveGoogleChatOutboundSpace.mockResolvedValue("spaces/AAA");
+    const failure = new Error("second chunk failed");
+    sendGoogleChatMessage.mockResolvedValueOnce(null).mockRejectedValueOnce(failure);
+
+    await expect(
+      googlechatMessageActions.handleAction({
+        action: "send",
+        params: { to: "spaces/AAA", message: "x".repeat(33_000) },
+        cfg: {},
+        accountId: "default",
+      } as never),
+    ).rejects.toBe(failure);
+    expect(sendGoogleChatMessage).toHaveBeenCalledTimes(2);
+  });
+
   it.each([
     { action: "send", params: { to: "spaces/AAA", message: "caption", media: "remote.png" } },
     {

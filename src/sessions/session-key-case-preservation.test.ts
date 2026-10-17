@@ -52,6 +52,13 @@ describe("parseRawSessionConversationRef", () => {
     });
   });
 
+  it("preserves a non-Google Chat peer id ending in a subsession-shaped suffix", () => {
+    const key = "agent:main:matrix:channel:!room:subsession:0123456789abcdef";
+    expect(parseThreadSessionSuffix(key)).toEqual({ baseSessionKey: key, threadId: undefined });
+    expect(parseSessionDeliveryRoute(key)?.peerId).toBe("!room:subsession:0123456789abcdef");
+    expect(parseRawSessionConversationRef(key)?.rawId).toBe("!room:subsession:0123456789abcdef");
+  });
+
   it("preserves empty segments inside opaque Matrix room ids", () => {
     expect(parseRawSessionConversationRef("agent:main:matrix:channel:!room:[2001:db8::1]")).toEqual(
       {

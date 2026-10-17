@@ -141,6 +141,8 @@ type DeliveryOutcome = {
 async function runDelivery(params: {
   withTypingMessage?: boolean;
   statusSink?: Parameters<typeof deliverGoogleChatReply>[0]["statusSink"];
+  onTypingMessageClaimed?: () => void;
+  onTypingMessageRejected?: () => void;
 }): Promise<DeliveryOutcome> {
   const errorLines: string[] = [];
   const runtime: GoogleChatRuntimeEnv = {
@@ -161,6 +163,8 @@ async function runDelivery(params: {
       core,
       config,
       ...(params.statusSink ? { statusSink: params.statusSink } : {}),
+      onTypingMessageClaimed: params.onTypingMessageClaimed,
+      onTypingMessageRejected: params.onTypingMessageRejected,
       ...(params.withTypingMessage
         ? {
             typingMessage: {
@@ -266,6 +270,26 @@ describe("Google Chat reply delivery failure propagation (integration)", () => {
       // The recoverable placeholder failure stays logged, not fatal; only the
       // resend failure becomes the delivery error.
       expect(result.errorLines.some((line) => line.includes("Google Chat API 404"))).toBe(true);
+    });
+  });
+
+  it("returns placeholder custody after a rate-limit rejection", async () => {
+    const stub = createStubHandler({ failCreateIndexes: new Set(), patchStatus: 429 });
+    const onTypingMessageClaimed = vi.fn();
+    const onTypingMessageRejected = vi.fn();
+    await withServer(stub.handler, async (baseUrl) => {
+      fetchControl.pointAtStub(baseUrl);
+      const result = await runDelivery({
+        withTypingMessage: true,
+        onTypingMessageClaimed,
+        onTypingMessageRejected,
+      });
+
+      expect(result.outcome).toBe("failed-deliver");
+      expect((result.deliverError as Error).message).toContain("Google Chat API 429");
+      expect(onTypingMessageClaimed).toHaveBeenCalledOnce();
+      expect(onTypingMessageRejected).toHaveBeenCalledOnce();
+      expect(stub.patchAttempts).toEqual(["spaces/AAA/messages/typing"]);
     });
   });
 

@@ -164,7 +164,10 @@ export async function deliverGoogleChatReply(params: {
       } catch (error) {
         if (
           error instanceof GoogleChatApiError &&
-          (error.status === 400 || error.status === 401 || error.status === 403)
+          (error.status === 400 ||
+            error.status === 401 ||
+            error.status === 403 ||
+            error.status === 429)
         ) {
           // Explicit request or authorization rejection cannot have replaced the placeholder.
           // Timeouts and other statuses may still represent an accepted edit.

@@ -92,7 +92,9 @@ export async function handleGoogleChatAction({
           visibleReplySent: true,
         });
       }
-      acceptedText.push({ id: sent?.messageName, text });
+      if (sent) {
+        acceptedText.push({ id: sent.messageName, text });
+      }
       thread = sent?.threadName ?? thread;
     }
     return jsonResult({ ok: true, to: space, ...sent });
