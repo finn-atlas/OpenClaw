@@ -49,6 +49,7 @@ const routingMocks = vi.hoisted(() => ({
 
 const inboundMocks = vi.hoisted(() => ({
   buildEnvelope: vi.fn(({ body }: { body: string }) => body),
+  createEnvelope: vi.fn(),
   resolveAgentRoute: vi.fn(),
   toInboundMediaFactsWithMetadata: vi.fn(),
 }));
@@ -60,7 +61,7 @@ vi.mock("openclaw/plugin-sdk/channel-inbound", async (importOriginal) => {
   );
   return {
     ...actual,
-    createChannelInboundEnvelopeBuilderAsync: async () => inboundMocks.buildEnvelope,
+    createChannelInboundEnvelopeBuilderAsync: inboundMocks.createEnvelope,
     toInboundMediaFactsWithMetadata: inboundMocks.toInboundMediaFactsWithMetadata,
   };
 });
@@ -103,6 +104,9 @@ beforeEach(() => {
   apiMocks.updateGoogleChatMessage.mockReset().mockResolvedValue({});
   accessMocks.applyGoogleChatInboundAccessPolicy.mockReset();
   inboundMocks.buildEnvelope.mockReset().mockImplementation(({ body }: { body: string }) => body);
+  inboundMocks.createEnvelope
+    .mockReset()
+    .mockImplementation(async () => inboundMocks.buildEnvelope);
   inboundMocks.resolveAgentRoute
     .mockReset()
     .mockImplementation(({ accountId }: { accountId: string }) => ({
@@ -170,6 +174,110 @@ function allowGoogleChatMediaSender(commandAuthorized?: boolean) {
     groupSystemPrompt: undefined,
   });
 }
+
+describe("googlechat thread sessions", () => {
+  it("keeps A/B/A thread context separate while routing all turns through the space binding", async () => {
+    const { buildContext, core, runTurn } = createInboundClassificationHarness();
+    allowGoogleChatMediaSender();
+    const account: ResolvedGoogleChatAccount = {
+      ...googleChatMediaTestAccount,
+      config: { typingIndicator: "none", sessionThread: true },
+    };
+    const sharedRoute = {
+      agentId: "agent-1",
+      accountId: account.accountId,
+      sessionKey: "session-1",
+    };
+    inboundMocks.resolveAgentRoute.mockReturnValue(sharedRoute);
+    const threads = ["MixedCaseA", "mixedcasea", "MixedCaseA"];
+    for (const [index, thread] of threads.entries()) {
+      await processGoogleChatTestEvent({
+        event: {
+          type: "MESSAGE",
+          space: { name: "spaces/ROOM", type: "ROOM" },
+          message: {
+            name: `spaces/ROOM/messages/${index}`,
+            text: `turn ${index}`,
+            thread: { name: `spaces/ROOM/threads/${thread}` },
+            sender: { name: "users/alice", type: "HUMAN" },
+          },
+        },
+        account,
+        core,
+      });
+    }
+
+    expect(inboundMocks.resolveAgentRoute).toHaveBeenCalledTimes(3);
+    expect(sharedRoute.sessionKey).toBe("session-1");
+    for (const [call] of inboundMocks.resolveAgentRoute.mock.calls) {
+      expect(call.peer).toEqual({ kind: "group", id: "spaces/ROOM" });
+    }
+    const contexts = buildContext.mock.calls.map(([context]) => context) as Array<{
+      route: { routeSessionKey: string; dispatchSessionKey: string };
+      reply: { messageThreadId?: string };
+    }>;
+    const keys = contexts.map((context) => context.route.dispatchSessionKey);
+    expect(keys[0]).toBe(keys[2]);
+    expect(keys[0]).not.toBe(keys[1]);
+    expect(keys[0]).not.toBe("session-1");
+    expect(keys.every((key) => key.includes(":subsession:"))).toBe(true);
+    expect(contexts.map((context) => context.route.routeSessionKey)).toEqual([
+      "session-1",
+      "session-1",
+      "session-1",
+    ]);
+    expect(contexts.map((context) => context.reply.messageThreadId)).toEqual(
+      threads.map((thread) => `spaces/ROOM/threads/${thread}`),
+    );
+    expect(
+      accessMocks.applyGoogleChatInboundAccessPolicy.mock.calls.map(
+        ([call]) => call.contextBinding.sessionKey,
+      ),
+    ).toEqual(keys);
+    expect(inboundMocks.createEnvelope.mock.calls.map(([call]) => call.route.sessionKey)).toEqual(
+      keys,
+    );
+    expect(runTurn.mock.calls.map(([call]) => call.adapter.resolveTurn().route.sessionKey)).toEqual(
+      keys,
+    );
+  });
+
+  it.each([
+    { label: "disabled account", enabled: false, group: true, thread: "spaces/ROOM/threads/A" },
+    { label: "direct message", enabled: true, group: false, thread: "spaces/ROOM/threads/A" },
+    { label: "thread starter", enabled: true, group: true, thread: undefined },
+  ])("retains the space session for $label", async ({ enabled, group, thread }) => {
+    const { buildContext, core, runTurn } = createInboundClassificationHarness();
+    allowGoogleChatMediaSender();
+    await processGoogleChatTestEvent({
+      event: {
+        type: "MESSAGE",
+        space: { name: "spaces/ROOM", type: group ? "ROOM" : "DM" },
+        message: {
+          name: "spaces/ROOM/messages/1",
+          text: "hello",
+          ...(thread ? { thread: { name: thread } } : {}),
+          sender: { name: "users/alice", type: "HUMAN" },
+        },
+      },
+      account: {
+        ...googleChatMediaTestAccount,
+        config: { typingIndicator: "none", sessionThread: enabled },
+      },
+      core,
+    });
+    const context = buildContext.mock.calls[0]?.[0] as {
+      route: { routeSessionKey: string; dispatchSessionKey: string };
+      reply: { messageThreadId?: string };
+    };
+    expect(context.route.dispatchSessionKey).toBe("session-1");
+    expect(context.reply.messageThreadId).toBeUndefined();
+    expect(
+      accessMocks.applyGoogleChatInboundAccessPolicy.mock.calls[0]?.[0].contextBinding.sessionKey,
+    ).toBe("session-1");
+    expect(runTurn.mock.calls[0]?.[0].adapter.resolveTurn().route.sessionKey).toBe("session-1");
+  });
+});
 
 async function processGoogleChatTestEvent(params: {
   event: GoogleChatEvent;

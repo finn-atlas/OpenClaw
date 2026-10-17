@@ -138,7 +138,7 @@ Configure the tunnel ingress rules to route only the webhook path:
    - `audienceType: "project-number"` → audience is the Cloud project number.
    - Add-on tokens under `app-url` additionally require `appPrincipal` set to the app's numeric OAuth 2.0 client ID (21 digits, not an email). Otherwise verification fails with a logged warning.
 4. Messages route by space:
-   - Spaces get per-space sessions `agent:<agentId>:googlechat:group:<spaceId>`. With `replyToMode: "first"` or `"all"`, automatic replies stay in the inbound thread. The default and explicit `"off"` modes keep replies top-level, whether typing indicators are enabled or disabled.
+   - Spaces get per-space sessions `agent:<agentId>:googlechat:group:<spaceId>` by default. Set `sessionThread: true` for a separate session per Google Chat thread in each space; messages without a thread retain the space session. Space bindings and access rules still apply. With `replyToMode: "first"` or `"all"`, automatic replies stay in the inbound thread. The default and explicit `"off"` modes keep replies top-level, whether typing indicators are enabled or disabled.
    - DMs collapse into the agent's main session by default. Set `session.dmScope` for per-peer DM sessions (see [Session](/concepts/session)).
 5. DM access is pairing by default. Unknown senders receive a pairing code. Approve with:
    - `openclaw pairing approve googlechat <code>`
@@ -200,6 +200,7 @@ Notes:
 - Omitted account `dmPolicy` and `groupPolicy` inherit the channel root. Explicit account policies win. The root defaults to `pairing` and `allowlist` respectively. Shared settings from `accounts.default` have lower precedence than the root. Its credentials, `enabled`, and `dangerouslyAllowNameMatching` are not inherited by named accounts.
 - Default webhook path is `/googlechat` when `webhookPath` is unset. `webhookUrl` can supply the path instead.
 - Group keys must be stable space ids (`spaces/<spaceId>`). Display-name keys are deprecated and logged as such.
+- `sessionThread` defaults to `false`. Set it at the channel root or per account to keep simultaneous threads in one space in separate sessions. It does not change space-based agent bindings or `replyToMode`; set `replyToMode: "all"` if replies should remain in their inbound threads.
 - `dangerouslyAllowNameMatching` re-enables mutable email principal matching for allowlists (break-glass compatibility mode). Doctor warns about email entries.
 - Google Chat reaction actions are not exposed. The plugin uses service-account authentication, while Google Chat reaction endpoints require user authentication. Remove unsupported legacy reaction settings with `openclaw doctor --fix`.
 - Native approval cards use Google Chat `cardsV2` button clicks, not reaction events. Approvers come from `allowFrom` or `defaultTo` and must be stable numeric `users/<id>` values.

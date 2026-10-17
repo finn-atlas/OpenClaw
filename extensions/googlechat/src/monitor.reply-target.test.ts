@@ -162,6 +162,33 @@ const THREAD = `${SPACE}/threads/requested`;
 const TYPING = `${SPACE}/messages/typing`;
 
 describe("Google Chat automatic reply target reconciliation", () => {
+  it("honors an explicit reply target with thread sessions enabled", async () => {
+    const otherThread = `${SPACE}/threads/other`;
+    const account = createAccount({
+      replyToMode: "all",
+      typingIndicator: "none",
+      sessionThread: true,
+    });
+    const core = createCore({
+      run: async (delivery) => {
+        const payload = Object.freeze({ text: "retargeted", replyToId: otherThread });
+        expect(delivery.durable(payload, { kind: "final" })).toEqual({
+          to: SPACE,
+          replyToId: otherThread,
+          threadId: otherThread,
+        });
+        await delivery.deliver(payload);
+      },
+    });
+    await processEvent({ account, core });
+    expect(apiMocks.sendGoogleChatMessage).toHaveBeenCalledWith({
+      account,
+      space: SPACE,
+      text: "retargeted",
+      thread: otherThread,
+    });
+  });
+
   it("keeps automatic replies top-level with reply mode off", async () => {
     const account = createAccount({ replyToMode: "off" });
     const payload = Object.freeze({ text: "top-level reply", replyToId: SOURCE });
