@@ -1,6 +1,7 @@
 // Googlechat tests cover automatic reply target reconciliation at the monitor boundary.
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { ResolvedGoogleChatAccount } from "./accounts.js";
+import type { GoogleChatIngressLifecycle } from "./monitor-ingress.js";
 import type { GoogleChatCoreRuntime, GoogleChatRuntimeEnv } from "./monitor-types.js";
 import "./monitor.js";
 import type { GoogleChatEvent } from "./types.js";
@@ -18,7 +19,11 @@ const accessMocks = vi.hoisted(() => ({
 
 const routingMocks = vi.hoisted(() => ({
   processEvent: undefined as
-    | ((event: GoogleChatEvent, target: Record<string, unknown>) => Promise<void>)
+    | ((
+        event: GoogleChatEvent,
+        target: Record<string, unknown>,
+        lifecycle?: GoogleChatIngressLifecycle,
+      ) => Promise<void>)
     | undefined,
 }));
 
@@ -46,17 +51,37 @@ vi.mock("./monitor-routing.js", () => ({
   registerGoogleChatWebhookTarget: vi.fn(),
   setGoogleChatWebhookEventProcessor: vi.fn(
     (
-      eventProcessor: (event: GoogleChatEvent, target: Record<string, unknown>) => Promise<void>,
+      eventProcessor: (
+        event: GoogleChatEvent,
+        target: Record<string, unknown>,
+        lifecycle?: GoogleChatIngressLifecycle,
+      ) => Promise<void>,
     ) => {
       routingMocks.processEvent = eventProcessor;
     },
   ),
 }));
 
-type GoogleChatTestReplyPayload = { text: string; replyToId?: string };
+type GoogleChatTestReplyPayload = {
+  text: string;
+  replyToId?: string;
+  isStatusNotice?: boolean;
+  isCommentary?: boolean;
+  isCompactionNotice?: boolean;
+  isFallbackNotice?: boolean;
+};
 type GoogleChatTestDelivery = {
   durable: (payload: GoogleChatTestReplyPayload, info: { kind: string }) => unknown;
-  deliver: (payload: GoogleChatTestReplyPayload) => Promise<void>;
+  deliver: (payload: GoogleChatTestReplyPayload, info?: { kind: string }) => Promise<void>;
+  onDelivered: (
+    payload: GoogleChatTestReplyPayload,
+    info: { kind: string },
+    result?: { visibleReplySent?: boolean },
+  ) => Promise<void>;
+};
+type GoogleChatTestTurn = {
+  delivery: GoogleChatTestDelivery;
+  dispatcherOptions?: { onReplyStart?: () => Promise<void> };
 };
 
 beforeEach(() => {
@@ -82,21 +107,20 @@ beforeEach(() => {
 });
 
 function createCore(params: {
-  run: (delivery: GoogleChatTestDelivery) => Promise<void>;
+  run: (delivery: GoogleChatTestDelivery, turn: GoogleChatTestTurn) => Promise<void>;
   chunks?: string[];
+  result?: unknown;
 }) {
   return {
     logging: { shouldLogVerbose: () => false },
     channel: {
       inbound: {
         buildContext: vi.fn((payload: unknown) => payload),
-        run: vi.fn(
-          async (turn: {
-            adapter: { resolveTurn: () => { delivery: GoogleChatTestDelivery } };
-          }) => {
-            await params.run(turn.adapter.resolveTurn().delivery);
-          },
-        ),
+        run: vi.fn(async (turn: { adapter: { resolveTurn: () => GoogleChatTestTurn } }) => {
+          const resolved = turn.adapter.resolveTurn();
+          await params.run(resolved.delivery, resolved);
+          return params.result;
+        }),
       },
       text: {
         resolveChunkMode: vi.fn(() => "markdown"),
@@ -139,18 +163,24 @@ async function processEvent(params: {
   core: GoogleChatCoreRuntime;
   event?: GoogleChatEvent;
   runtime?: GoogleChatRuntimeEnv;
+  config?: Record<string, unknown>;
+  lifecycle?: GoogleChatIngressLifecycle;
 }) {
   if (!routingMocks.processEvent) {
     throw new Error("Expected Google Chat webhook event processor registration");
   }
-  await routingMocks.processEvent(params.event ?? createEvent(), {
-    account: params.account,
-    config: {},
-    runtime: params.runtime ?? { error: vi.fn(), log: vi.fn() },
-    core: params.core,
-    mediaMaxMb: 10,
-    path: "/googlechat",
-  });
+  await routingMocks.processEvent(
+    params.event ?? createEvent(),
+    {
+      account: params.account,
+      config: params.config ?? {},
+      runtime: params.runtime ?? { error: vi.fn(), log: vi.fn() },
+      core: params.core,
+      mediaMaxMb: 10,
+      path: "/googlechat",
+    },
+    params.lifecycle,
+  );
 }
 
 describe("Google Chat automatic reply target reconciliation", () => {
@@ -251,6 +281,268 @@ describe("Google Chat automatic reply target reconciliation", () => {
       text: "_OpenClaw is typing..._",
       thread: requestedThread,
     });
+  });
+
+  it("shows queued status in the typing message and removes it after a silent turn", async () => {
+    const account = createAccount({ replyToMode: "all" });
+    const core = createCore({ run: async () => {} });
+    apiMocks.sendGoogleChatMessage.mockResolvedValueOnce({
+      messageName: "spaces/CLASSIFY/messages/typing",
+      threadName: "spaces/CLASSIFY/threads/requested",
+    });
+
+    await processEvent({
+      account,
+      core,
+      config: { messages: { statusReactions: { enabled: true } } },
+    });
+
+    expect(apiMocks.updateGoogleChatMessage).toHaveBeenCalledWith({
+      account,
+      messageName: "spaces/CLASSIFY/messages/typing",
+      text: "👀 Received",
+    });
+    expect(apiMocks.deleteGoogleChatMessage).toHaveBeenCalledExactlyOnceWith({
+      account,
+      messageName: "spaces/CLASSIFY/messages/typing",
+    });
+  });
+
+  it("moves a normal turn from received to thinking through dispatcher options", async () => {
+    vi.useFakeTimers();
+    const account = createAccount({ replyToMode: "all" });
+    const core = createCore({
+      run: async (_delivery, turn) => {
+        expect(turn.dispatcherOptions?.onReplyStart).toBeTypeOf("function");
+        await turn.dispatcherOptions?.onReplyStart?.();
+        await vi.advanceTimersByTimeAsync(800);
+      },
+    });
+    apiMocks.sendGoogleChatMessage.mockResolvedValueOnce({
+      messageName: "spaces/CLASSIFY/messages/typing",
+      threadName: "spaces/CLASSIFY/threads/requested",
+    });
+
+    try {
+      await processEvent({
+        account,
+        core,
+        config: { messages: { statusReactions: { enabled: true } } },
+      });
+
+      expect(apiMocks.updateGoogleChatMessage).toHaveBeenCalledWith({
+        account,
+        messageName: "spaces/CLASSIFY/messages/typing",
+        text: "🧠 Thinking…",
+      });
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it.each(["isCompactionNotice", "isFallbackNotice"] as const)(
+    "keeps the typing placeholder through an interim %s",
+    async (noticeFlag) => {
+      const account = createAccount({ replyToMode: "all" });
+      const core = createCore({
+        run: async (delivery) => {
+          await delivery.deliver({
+            text: "Interim notice",
+            replyToId: "spaces/CLASSIFY/messages/1",
+            [noticeFlag]: true,
+          });
+          await delivery.deliver({
+            text: "Final answer",
+            replyToId: "spaces/CLASSIFY/messages/1",
+          });
+        },
+      });
+      apiMocks.sendGoogleChatMessage
+        .mockResolvedValueOnce({
+          messageName: "spaces/CLASSIFY/messages/typing",
+          threadName: "spaces/CLASSIFY/threads/requested",
+        })
+        .mockResolvedValueOnce({
+          messageName: "spaces/CLASSIFY/messages/notice",
+          threadName: "spaces/CLASSIFY/threads/requested",
+        });
+
+      await processEvent({ account, core });
+
+      expect(apiMocks.sendGoogleChatMessage).toHaveBeenCalledTimes(2);
+      expect(apiMocks.updateGoogleChatMessage).toHaveBeenCalledWith({
+        account,
+        messageName: "spaces/CLASSIFY/messages/typing",
+        text: "Final answer",
+      });
+      expect(apiMocks.deleteGoogleChatMessage).not.toHaveBeenCalled();
+    },
+  );
+
+  it("removes an unused typing placeholder when the turn ends without a reply", async () => {
+    const account = createAccount({ replyToMode: "all" });
+    const core = createCore({ run: async () => {} });
+    apiMocks.sendGoogleChatMessage.mockResolvedValueOnce({
+      messageName: "spaces/CLASSIFY/messages/typing",
+      threadName: "spaces/CLASSIFY/threads/requested",
+    });
+
+    await processEvent({ account, core });
+
+    expect(apiMocks.deleteGoogleChatMessage).toHaveBeenCalledExactlyOnceWith({
+      account,
+      messageName: "spaces/CLASSIFY/messages/typing",
+    });
+  });
+
+  it("keeps a queued turn's typing message until its later reply claims it", async () => {
+    const account = createAccount({ replyToMode: "all" });
+    const lifecycle = {
+      admission: "exclusive",
+      abortSignal: new AbortController().signal,
+      onAdopted: vi.fn(),
+      onDeferred: vi.fn(),
+      onAbandoned: vi.fn(),
+      onSettled: vi.fn(),
+    } satisfies GoogleChatIngressLifecycle & { onSettled: () => void };
+    let deferredDelivery: GoogleChatTestDelivery | undefined;
+    const core = createCore({
+      run: async (delivery) => {
+        deferredDelivery = delivery;
+        lifecycle.onDeferred?.();
+      },
+      result: { dispatched: true, dispatchResult: { deferredToActiveRun: "followup" } },
+    });
+    apiMocks.sendGoogleChatMessage.mockResolvedValueOnce({
+      messageName: "spaces/CLASSIFY/messages/typing",
+      threadName: "spaces/CLASSIFY/threads/requested",
+    });
+
+    await processEvent({ account, core, lifecycle });
+
+    expect(apiMocks.deleteGoogleChatMessage).not.toHaveBeenCalled();
+    if (!deferredDelivery) {
+      throw new Error("Queued Google Chat delivery was not captured");
+    }
+    await deferredDelivery.deliver({
+      text: "queued reply",
+      replyToId: "spaces/CLASSIFY/messages/1",
+    });
+    lifecycle.onSettled?.();
+
+    expect(apiMocks.updateGoogleChatMessage).toHaveBeenCalledWith({
+      account,
+      messageName: "spaces/CLASSIFY/messages/typing",
+      text: "queued reply",
+    });
+    expect(apiMocks.deleteGoogleChatMessage).not.toHaveBeenCalled();
+  });
+
+  it("removes a steering placeholder when its lifecycle settles before dispatch returns", async () => {
+    const account = createAccount({ replyToMode: "all" });
+    const lifecycle = {
+      admission: "exclusive",
+      abortSignal: new AbortController().signal,
+      onAdopted: vi.fn(),
+      onDeferred: vi.fn(),
+      onAbandoned: vi.fn(),
+      onSettled: vi.fn(),
+    } satisfies GoogleChatIngressLifecycle & { onSettled: () => void };
+    const core = createCore({
+      run: async () => {
+        lifecycle.onSettled();
+      },
+      result: { dispatched: true, dispatchResult: { deferredToActiveRun: "steer" } },
+    });
+    apiMocks.sendGoogleChatMessage.mockResolvedValueOnce({
+      messageName: "spaces/CLASSIFY/messages/typing",
+      threadName: "spaces/CLASSIFY/threads/requested",
+    });
+
+    await processEvent({ account, core, lifecycle });
+
+    expect(apiMocks.deleteGoogleChatMessage).toHaveBeenCalledExactlyOnceWith({
+      account,
+      messageName: "spaces/CLASSIFY/messages/typing",
+    });
+  });
+
+  it("keeps a requested diagnostic notice after the turn sends a separate answer", async () => {
+    const account = createAccount({ replyToMode: "all" });
+    const core = createCore({
+      run: async (delivery) => {
+        await delivery.deliver(
+          {
+            text: "Diagnostics",
+            replyToId: "spaces/CLASSIFY/messages/1",
+            isStatusNotice: true,
+          },
+          { kind: "final" },
+        );
+      },
+      result: { dispatched: true, dispatchResult: { observedReplyDelivery: true } },
+    });
+    apiMocks.sendGoogleChatMessage.mockResolvedValueOnce({
+      messageName: "spaces/CLASSIFY/messages/typing",
+      threadName: "spaces/CLASSIFY/threads/requested",
+    });
+
+    await processEvent({ account, core });
+
+    expect(apiMocks.updateGoogleChatMessage).toHaveBeenCalledWith({
+      account,
+      messageName: "spaces/CLASSIFY/messages/typing",
+      text: "Diagnostics",
+    });
+    expect(apiMocks.deleteGoogleChatMessage).not.toHaveBeenCalled();
+  });
+
+  it("cleans queued tool progress when a later block-streamed answer settles", async () => {
+    const account = createAccount({ replyToMode: "all" });
+    const lifecycle = {
+      admission: "exclusive",
+      abortSignal: new AbortController().signal,
+      onAdopted: vi.fn(),
+      onDeferred: vi.fn(),
+      onAbandoned: vi.fn(),
+      onSettled: vi.fn(),
+    } satisfies GoogleChatIngressLifecycle & { onSettled: () => void };
+    let deferredDelivery: GoogleChatTestDelivery | undefined;
+    const core = createCore({
+      run: async (delivery) => {
+        deferredDelivery = delivery;
+        lifecycle.onDeferred();
+      },
+      result: { dispatched: true, dispatchResult: { deferredToActiveRun: "followup" } },
+    });
+    apiMocks.sendGoogleChatMessage
+      .mockResolvedValueOnce({
+        messageName: "spaces/CLASSIFY/messages/typing",
+        threadName: "spaces/CLASSIFY/threads/requested",
+      })
+      .mockResolvedValueOnce({
+        messageName: "spaces/CLASSIFY/messages/answer",
+        threadName: "spaces/CLASSIFY/threads/requested",
+      });
+
+    await processEvent({ account, core, lifecycle });
+    if (!deferredDelivery) {
+      throw new Error("Queued Google Chat delivery was not captured");
+    }
+    const progress = { text: "Working", replyToId: "spaces/CLASSIFY/messages/1" };
+    await deferredDelivery.deliver(progress, { kind: "tool" });
+    await deferredDelivery.onDelivered(progress, { kind: "tool" });
+    const answer = { text: "Done", replyToId: "spaces/CLASSIFY/messages/1" };
+    await deferredDelivery.deliver(answer, { kind: "block" });
+    await deferredDelivery.onDelivered(answer, { kind: "block" });
+    lifecycle.onSettled();
+
+    await vi.waitFor(() =>
+      expect(apiMocks.deleteGoogleChatMessage).toHaveBeenCalledExactlyOnceWith({
+        account,
+        messageName: "spaces/CLASSIFY/messages/typing",
+      }),
+    );
   });
 
   it("reconciles delivery and durable metadata without a typing message", async () => {

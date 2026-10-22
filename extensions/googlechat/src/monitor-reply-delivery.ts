@@ -51,6 +51,8 @@ export async function deliverGoogleChatReply(params: {
   config: OpenClawConfig;
   statusSink?: (patch: { lastInboundAt?: number; lastOutboundAt?: number }) => void;
   typingMessage?: GoogleChatTypingMessage;
+  onTypingMessageClaimed?: () => void;
+  onTextDelivered?: (messageName: string) => void;
 }): Promise<void> {
   const { payload, account, spaceId, runtime, core, config, statusSink } = params;
   // Clear this whenever the typing message is deleted or unavailable; otherwise
@@ -134,7 +136,11 @@ export async function deliverGoogleChatReply(params: {
       }),
     );
     if (sent) {
-      acceptedText.push({ id: sent.messageName?.trim() || undefined, text: chunk });
+      const id = sent.messageName?.trim() || undefined;
+      acceptedText.push({ id, text: chunk });
+      if (id) {
+        params.onTextDelivered?.(id);
+      }
     }
     if (replyThreadName) {
       deliveryThreadName = sent?.threadName?.trim() || deliveryThreadName;
@@ -146,13 +152,18 @@ export async function deliverGoogleChatReply(params: {
       continue;
     }
     if (typingMessage) {
+      // A failed request may still edit the message. The turn must not delete it
+      // after an ambiguous receipt, because it could already contain the answer.
+      params.onTypingMessageClaimed?.();
       try {
         const updated = await updateGoogleChatMessage({
           account,
           messageName: typingMessage.name,
           text: chunk,
         });
-        acceptedText.push({ id: updated.messageName?.trim() || typingMessage.name, text: chunk });
+        const id = updated.messageName?.trim() || typingMessage.name;
+        acceptedText.push({ id, text: chunk });
+        params.onTextDelivered?.(id);
       } catch (error) {
         if (!(error instanceof GoogleChatApiError) || error.status !== 404) {
           throw error;

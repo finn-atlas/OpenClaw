@@ -11,11 +11,17 @@ import { channelBlockedPatch, channelReadyPatch } from "openclaw/plugin-sdk/gate
 import { MediaFetchError } from "openclaw/plugin-sdk/media-runtime";
 import { parseDateStringTimestampMs as resolveGoogleChatTimestampMs } from "openclaw/plugin-sdk/number-runtime";
 import { mergePairLoopGuardConfig } from "openclaw/plugin-sdk/pair-loop-guard-runtime";
+import type { GetReplyOptions, ReplyPayload } from "openclaw/plugin-sdk/reply-runtime";
 import { createRuntimeConfigReader } from "openclaw/plugin-sdk/runtime-config-snapshot";
 import { normalizeOptionalLowercaseString } from "openclaw/plugin-sdk/string-coerce-runtime";
 import { resolveWebhookPath } from "openclaw/plugin-sdk/webhook-ingress";
 import type { ResolvedGoogleChatAccount } from "./accounts.js";
-import { downloadGoogleChatMedia, sendGoogleChatMessage } from "./api.js";
+import {
+  deleteGoogleChatMessage,
+  downloadGoogleChatMedia,
+  GoogleChatApiError,
+  sendGoogleChatMessage,
+} from "./api.js";
 import { maybeHandleGoogleChatApprovalCardClick } from "./approval-card-click.js";
 import type { GoogleChatAudienceType } from "./auth.js";
 import { applyGoogleChatInboundAccessPolicy } from "./monitor-access.js";
@@ -34,6 +40,7 @@ import {
   registerGoogleChatWebhookTarget,
   setGoogleChatWebhookEventProcessor,
 } from "./monitor-routing.js";
+import { createGoogleChatStatusMessage } from "./monitor-status-message.js";
 import type {
   GoogleChatCoreRuntime,
   GoogleChatMonitorOptions,
@@ -299,6 +306,27 @@ async function processGoogleChatEvent(
     typingIndicator = "message";
   }
   let typingMessage: GoogleChatTypingMessage | undefined;
+  const progressMessageNames = new Set<string>();
+  let hasVisibleAnswer = false;
+  const isProgressReply = (payload: ReplyPayload, kind?: string) =>
+    !payload.isError &&
+    !payload.isCompactionNotice &&
+    !payload.isFallbackNotice &&
+    (kind === "tool" || payload.isCommentary === true);
+  const cleanupProgress = async () => {
+    for (const messageName of progressMessageNames) {
+      try {
+        await deleteGoogleChatMessage({ account, messageName });
+        progressMessageNames.delete(messageName);
+      } catch (err) {
+        if (err instanceof GoogleChatApiError && err.status === 404) {
+          progressMessageNames.delete(messageName);
+        } else {
+          runtime.error?.(`Google Chat progress cleanup failed: ${String(err)}`);
+        }
+      }
+    }
+  };
   const effectiveReplyThreadName =
     account.config.replyToMode && account.config.replyToMode !== "off"
       ? replyThreadName
@@ -329,74 +357,204 @@ async function processGoogleChatEvent(
     }
   }
 
-  await core.channel.inbound.run({
-    channel: "googlechat",
-    accountId: route.accountId,
-    raw: message,
-    ...(turnAdoptionLifecycle ? { turnAdoptionLifecycle } : {}),
-    adapter: {
-      ingest: () => ({
-        id: message.name ?? spaceId,
-        timestamp: timestampMs,
-        rawText: rawBody,
-        textForAgent: rawBody,
-        textForCommands: rawBody,
-        raw: message,
-      }),
-      resolveTurn: () => ({
-        cfg: config,
-        channel: "googlechat",
-        accountId: route.accountId,
-        route: { agentId: route.agentId, sessionKey: route.sessionKey },
-        ctxPayload,
-        delivery: {
-          durable: (payload, info) =>
-            resolveGoogleChatDurableReplyOptions({
-              payload: normalizeGoogleChatReplyTarget({
-                payload,
-                sourceMessageName: message.name,
-                replyThreadName: effectiveReplyThreadName,
+  const activity =
+    typingMessage && config.messages?.statusReactions?.enabled === true
+      ? await createGoogleChatStatusMessage({
+          account,
+          messageName: typingMessage.name,
+          onError: (error) => runtime.error?.(`Google Chat status update failed: ${String(error)}`),
+        })
+      : undefined;
+  let deferredToActiveRun = false;
+  let lifecycleSettled = false;
+  let settlement: Promise<void> | undefined;
+  const settleStatus = () =>
+    (settlement ??= (async () => {
+      await activity?.stop();
+      // Message-tool replies and silent/failed turns may never consume the placeholder.
+      if (typingMessage) {
+        try {
+          await deleteGoogleChatMessage({ account, messageName: typingMessage.name });
+        } catch (err) {
+          if (!(err instanceof GoogleChatApiError && err.status === 404)) {
+            runtime.error?.(`Google Chat typing cleanup failed: ${String(err)}`);
+          }
+        }
+      }
+    })());
+  if (turnAdoptionLifecycle) {
+    const statusLifecycle: NonNullable<GetReplyOptions["turnAdoptionLifecycle"]> =
+      turnAdoptionLifecycle;
+    const onDeferred = statusLifecycle.onDeferred;
+    const onSettled = statusLifecycle.onSettled;
+    statusLifecycle.onDeferred = () => {
+      const accepted = onDeferred?.();
+      if (accepted !== false) {
+        deferredToActiveRun = true;
+      }
+      return accepted;
+    };
+    statusLifecycle.onSettled = () => {
+      lifecycleSettled = true;
+      try {
+        onSettled?.();
+      } finally {
+        if (deferredToActiveRun) {
+          void (async () => {
+            if (hasVisibleAnswer) {
+              await cleanupProgress();
+            }
+            await settleStatus();
+          })().catch((error: unknown) => {
+            runtime.error?.(`Google Chat deferred status cleanup failed: ${String(error)}`);
+          });
+        }
+      }
+    };
+  }
+  try {
+    const turnResult = await core.channel.inbound.run({
+      channel: "googlechat",
+      accountId: route.accountId,
+      raw: message,
+      ...(turnAdoptionLifecycle ? { turnAdoptionLifecycle } : {}),
+      adapter: {
+        ingest: () => ({
+          id: message.name ?? spaceId,
+          timestamp: timestampMs,
+          rawText: rawBody,
+          textForAgent: rawBody,
+          textForCommands: rawBody,
+          raw: message,
+        }),
+        resolveTurn: () => ({
+          cfg: config,
+          channel: "googlechat",
+          accountId: route.accountId,
+          route: { agentId: route.agentId, sessionKey: route.sessionKey },
+          ctxPayload,
+          delivery: {
+            durable: (payload, info) =>
+              resolveGoogleChatDurableReplyOptions({
+                payload: normalizeGoogleChatReplyTarget({
+                  payload,
+                  sourceMessageName: message.name,
+                  replyThreadName: effectiveReplyThreadName,
+                }),
+                infoKind: info.kind,
+                spaceId,
+                hasTypingMessage: Boolean(typingMessage),
               }),
-              infoKind: info.kind,
-              spaceId,
-              hasTypingMessage: Boolean(typingMessage),
-            }),
-          deliver: async (payload) => {
-            await deliverGoogleChatReply({
-              payload: normalizeGoogleChatReplyTarget({
-                payload,
-                sourceMessageName: message.name,
-                replyThreadName: effectiveReplyThreadName,
-              }),
-              account,
-              spaceId,
-              runtime,
-              core,
-              config,
-              statusSink,
-              typingMessage,
-            });
-            // Only use typing message for first delivery
-            typingMessage = undefined;
+            deliver: async (payload, info) => {
+              // Interim notices are separate messages; the active turn still owns
+              // the typing placeholder and can continue updating its status.
+              const interimNotice = payload.isCompactionNotice || payload.isFallbackNotice;
+              if (!interimNotice) {
+                await activity?.stop();
+              }
+              await deliverGoogleChatReply({
+                payload: normalizeGoogleChatReplyTarget({
+                  payload,
+                  sourceMessageName: message.name,
+                  replyThreadName: effectiveReplyThreadName,
+                }),
+                account,
+                spaceId,
+                runtime,
+                core,
+                config,
+                statusSink,
+                typingMessage: interimNotice ? undefined : typingMessage,
+                onTypingMessageClaimed: () => {
+                  typingMessage = undefined;
+                },
+                onTextDelivered: (name) => {
+                  if (isProgressReply(payload, info?.kind)) {
+                    progressMessageNames.add(name);
+                  } else {
+                    progressMessageNames.delete(name);
+                  }
+                },
+              });
+              if (!interimNotice) {
+                // Only use the typing message for the first normal delivery.
+                typingMessage = undefined;
+              }
+            },
+            onDelivered: async (payload, info, result) => {
+              if (
+                result?.visibleReplySent !== false &&
+                !result?.suppression &&
+                !payload.isCompactionNotice &&
+                !payload.isFallbackNotice &&
+                !isProgressReply(payload, info?.kind)
+              ) {
+                hasVisibleAnswer = true;
+                if (info?.kind === "final") {
+                  await cleanupProgress();
+                }
+              }
+              statusSink?.({ lastOutboundAt: Date.now() });
+            },
+            onError: (err, info) => {
+              runtime.error?.(
+                `[${account.accountId}] Google Chat ${info.kind} reply failed: ${String(err)}`,
+              );
+            },
           },
-          onDelivered: () => {
-            statusSink?.({ lastOutboundAt: Date.now() });
+          replyPipeline: {},
+          dispatcherOptions: activity
+            ? {
+                onReplyStart: async () => {
+                  await activity.controller.setThinking();
+                },
+              }
+            : undefined,
+          replyOptions: {
+            commentaryPayloadsEnabled: false,
+            ...(activity
+              ? {
+                  allowToolLifecycleWhenProgressHidden: true,
+                  onToolStart: async (payload) => {
+                    await activity.controller.setTool(payload.name);
+                    return false;
+                  },
+                  onCompactionStart: async () => {
+                    await activity.controller.setCompacting();
+                    return false;
+                  },
+                  onCompactionEnd: async () => {
+                    await activity.controller.setThinking();
+                    return false;
+                  },
+                }
+              : {}),
           },
-          onError: (err, info) => {
-            runtime.error?.(
-              `[${account.accountId}] Google Chat ${info.kind} reply failed: ${String(err)}`,
-            );
+          record: {
+            onRecordError: (err) => {
+              runtime.error?.(`googlechat: failed updating session meta: ${String(err)}`);
+            },
           },
-        },
-        replyPipeline: {},
-        record: {
-          onRecordError: (err) => {
-            runtime.error?.(`googlechat: failed updating session meta: ${String(err)}`);
-          },
-        },
-      }),
-    },
-  });
+        }),
+      },
+    });
+    // Block streaming can deliver the complete answer without a final payload.
+    // Keep feedback when no answer was delivered or the turn throws.
+    if (
+      hasVisibleAnswer ||
+      (turnResult?.dispatched && turnResult.dispatchResult.observedReplyDelivery)
+    ) {
+      await cleanupProgress();
+    }
+    if (turnResult?.dispatched && turnResult.dispatchResult.deferredToActiveRun) {
+      deferredToActiveRun = true;
+    }
+  } finally {
+    // A queued turn retains this closure until the admission lifecycle settles.
+    if (!deferredToActiveRun || !turnAdoptionLifecycle || lifecycleSettled) {
+      await settleStatus();
+    }
+  }
 }
 
 async function downloadAttachment(
