@@ -62,6 +62,31 @@ afterAll(() => {
 });
 
 describe("Google Chat reply delivery", () => {
+  it("renders conversational Markdown before replacing the typing message", async () => {
+    await deliverGoogleChatReply({
+      payload: {
+        text: "**Confirmed** in [ACS](https://example.com/acs).",
+        replyToId: "spaces/AAA/threads/root",
+      },
+      account,
+      spaceId: "spaces/AAA",
+      runtime: createRuntimeSpies(),
+      core: createCore(),
+      config,
+      typingMessage: createGoogleChatTypingMessage({
+        messageName: "spaces/AAA/messages/typing",
+        requestedThreadName: "spaces/AAA/threads/root",
+        deliveredThreadName: "spaces/AAA/threads/root",
+      }),
+    });
+
+    expect(mocks.updateGoogleChatMessage).toHaveBeenCalledWith({
+      account,
+      messageName: "spaces/AAA/messages/typing",
+      text: "*Confirmed* in <https://example.com/acs|ACS>.",
+    });
+  });
+
   it("does not resend the first chunk when the typing update result is ambiguous", async () => {
     const core = createCore({ chunks: ["first chunk", "second chunk"] });
     const runtime = createRuntimeSpies();
