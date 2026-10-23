@@ -10,3 +10,7 @@ This deployment branch starts at upstream OpenClaw `05c947cc5d` (`2026.9.7`). It
 The status layer activates when `channels.googlechat.typingIndicator` is `message` and `messages.statusReactions.enabled` is `true`. Both layers change no configuration or session schema. An explicit `message(action=send)` is still a separate visible message; only ordinary automatic replies claim the placeholder.
 
 To roll back the gateway, restore the previous `~/openclaw` symlink target and restart it after active turns finish. Keep `~/.openclaw` and agent session stores in place. Before deployment, validate this pinned branch with the Google Chat monitor and reply-delivery tests, extension type checks, and a runtime build. After deployment, verify a real inbound Google Chat turn.
+
+## Runtime dependency deployment gate
+
+A Git clone excludes extension-local `node_modules`. Copying only the root dependency tree is insufficient: the Codex launcher resolves `extensions/codex/node_modules/@openai/codex/bin/codex.js`. Stage the pinned extension dependencies alongside the root dependencies before switching the runtime symlink. Verify that the staged Codex launcher resolves and returns the pinned version. After switching, require a successful isolated `gateway call agent --expect-final` turn using the configured harness, with external delivery disabled. Gateway readiness and channel probes alone do not establish model readiness.
