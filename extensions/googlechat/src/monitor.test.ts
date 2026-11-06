@@ -297,7 +297,19 @@ describe("googlechat monitor inbound space classification", () => {
     });
     expect(buildContext).toHaveBeenCalledWith(
       expect.objectContaining({
-        conversation: expect.objectContaining({ kind: isGroup ? "channel" : "direct" }),
+        conversation: expect.objectContaining({
+          kind: isGroup ? "channel" : "direct",
+          ...(isGroup ? {} : { routePeer: { kind: "direct", id: "spaces/CLASSIFY" } }),
+        }),
+        ...(isGroup
+          ? {}
+          : {
+              sessionTranscript: {
+                chatWindow: true,
+                conversationScope: "current",
+                historyLimit: 10,
+              },
+            }),
         extra: expect.objectContaining({ ChatType: isGroup ? "channel" : "direct" }),
       }),
     );

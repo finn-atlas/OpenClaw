@@ -1,6 +1,7 @@
 import { isSessionBoundaryCommandText } from "../../auto-reply/command-detection.js";
 import type { HistoryEntry } from "../../auto-reply/reply/history.types.js";
 import type { FinalizedMsgContext } from "../../auto-reply/templating.js";
+import { conversationIdentityFromMsgContext } from "../../config/sessions/conversation-identity.js";
 import { readRecentUserAssistantTextForSession } from "../../config/sessions/transcript.js";
 import { parseAgentSessionKey } from "../../routing/session-key.js";
 import { stripInlineDirectiveTagsForDelivery } from "../../utils/directive-tags.js";
@@ -122,12 +123,30 @@ export async function mergeSessionTranscriptContext(params: {
   if (!agentId) {
     throw new Error("Session transcript context requires an agent owner.");
   }
+  let conversationRefs: string[] | undefined;
+  if (options?.conversationScope === "current") {
+    const current = conversationIdentityFromMsgContext({ ctx: params.ctx });
+    if (!current) {
+      return;
+    }
+    conversationRefs = [current.conversationRef];
+    if (params.ctx.ChatType === "direct" && params.ctx.ConversationRoutePeerId) {
+      const legacyCtx = { ...params.ctx };
+      delete legacyCtx.ConversationRoutePeerId;
+      delete legacyCtx.ConversationRouteContextObserved;
+      const legacy = conversationIdentityFromMsgContext({ ctx: legacyCtx });
+      if (legacy && legacy.conversationRef !== current.conversationRef) {
+        conversationRefs.push(legacy.conversationRef);
+      }
+    }
+  }
   const windows = mergeableChatWindowEntries(params.ctx);
   const turns = await readRecentUserAssistantTextForSession({
     agentId,
     sessionKey: params.sessionKey,
     storePath: params.storePath,
     limit,
+    ...(conversationRefs ? { conversationRefs } : {}),
     ...(windows.length === 0 && options?.chatWindow === true
       ? { includeCronDirectDeliveryContext: true }
       : {}),

@@ -56,6 +56,8 @@ export type ChannelStructuredContextEntry = {
 
 export type SessionTranscriptContext = {
   chatWindow?: boolean;
+  /** Restrict canonical transcript enrichment to the active transport conversation. */
+  conversationScope?: "current";
   historyLimit: number;
   /** A platform-selected recent window keeps its configured bound and does not merge transcript rows. */
   historyKind?: "pending" | "recent";

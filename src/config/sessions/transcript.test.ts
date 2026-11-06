@@ -990,6 +990,84 @@ describe("appendAssistantMessageToSessionTranscript", () => {
     ]);
   });
 
+  it("keeps recent context inside the requested transport conversation", async () => {
+    await writeTranscriptStore();
+    await persistSessionTranscriptTurn(createFixtureTranscriptScope(), {
+      updateMode: "none",
+      messages: [
+        {
+          eventId: "conversation-a-user-1",
+          message: {
+            role: "user",
+            content: "first question in A",
+            timestamp: 1_000,
+            __openclaw: { transport: { conversationRef: "conv_a" } },
+          },
+        },
+        {
+          eventId: "conversation-a-assistant-1",
+          parentId: "conversation-a-user-1",
+          message: { role: "assistant", content: "first answer in A", timestamp: 2_000 },
+        },
+        {
+          eventId: "conversation-b-user",
+          parentId: "conversation-a-assistant-1",
+          message: {
+            role: "user",
+            content: "question in B",
+            timestamp: 3_000,
+            __openclaw: { transport: { conversationRef: "conv_b" } },
+          },
+        },
+        {
+          eventId: "conversation-b-assistant",
+          parentId: "conversation-b-user",
+          message: { role: "assistant", content: "answer in B", timestamp: 4_000 },
+        },
+        {
+          eventId: "conversation-a-user-2",
+          parentId: "conversation-b-assistant",
+          message: {
+            role: "user",
+            content: "second question in A",
+            timestamp: 5_000,
+            __openclaw: { transport: { conversationRef: "conv_a" } },
+          },
+        },
+        {
+          eventId: "conversation-a-assistant-2",
+          parentId: "conversation-a-user-2",
+          message: { role: "assistant", content: "second answer in A", timestamp: 6_000 },
+        },
+      ],
+    });
+
+    await expect(
+      readRecentUserAssistantTextForSession({
+        agentId: "main",
+        sessionKey,
+        storePath: fixture.storePath(),
+        conversationRefs: ["conv_a"],
+        limit: 10,
+      }),
+    ).resolves.toEqual([
+      { id: "conversation-a-user-1", role: "user", text: "first question in A", timestamp: 1_000 },
+      {
+        id: "conversation-a-assistant-1",
+        role: "assistant",
+        text: "first answer in A",
+        timestamp: 2_000,
+      },
+      { id: "conversation-a-user-2", role: "user", text: "second question in A", timestamp: 5_000 },
+      {
+        id: "conversation-a-assistant-2",
+        role: "assistant",
+        text: "second answer in A",
+        timestamp: 6_000,
+      },
+    ]);
+  });
+
   it("admits only marked Cron delivery context when explicitly requested", async () => {
     await writeTranscriptStore();
     await persistSessionTranscriptTurn(createFixtureTranscriptScope(), {
@@ -2026,4 +2104,3 @@ describe("appendAssistantMessageToSessionTranscript", () => {
     emitSpy.mockRestore();
   });
 });
-/* oxlint-disable max-lines -- TODO: split this grandfathered oversized file. */

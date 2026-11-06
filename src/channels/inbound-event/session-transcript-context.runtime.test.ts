@@ -124,6 +124,40 @@ describe("session transcript inbound context", () => {
     ]);
   });
 
+  it("scopes canonical history to the current direct conversation", async () => {
+    readRecent.mockResolvedValue([]);
+    const ctx = context({
+      AccountId: "work",
+      ChatType: "direct",
+      ConversationRoutePeerId: "spaces/DM",
+      From: "googlechat:users/alice",
+      OriginatingChannel: "googlechat",
+      OriginatingTo: "googlechat:spaces/DM",
+      Provider: "googlechat",
+      SessionTranscriptContext: {
+        chatWindow: true,
+        conversationScope: "current",
+        historyLimit: 10,
+      },
+      To: "googlechat:spaces/DM",
+    });
+
+    await mergeSessionTranscriptContext({
+      agentId: "main",
+      ctx,
+      sessionKey: ctx.SessionKey!,
+      storePath: "/tmp/sessions.json",
+    });
+
+    const conversationRefs = readRecent.mock.calls[0]?.[0].conversationRefs;
+    expect(conversationRefs).toHaveLength(2);
+    expect(new Set(conversationRefs).size).toBe(2);
+    expect(conversationRefs).toEqual([
+      expect.stringMatching(/^conv_/),
+      expect.stringMatching(/^conv_/),
+    ]);
+  });
+
   it("dedupes the canonical turn against the live window and merges chronologically", async () => {
     readRecent.mockResolvedValue([
       { id: "u1", role: "user", text: "cached user turn", timestamp: 1_000 },

@@ -125,8 +125,13 @@ export type SessionRecentConversationText = {
   sourceChannel?: string;
 };
 
+type ExtractedSessionRecentConversationText = SessionRecentConversationText & {
+  conversationRef?: string;
+};
+
 type ReadRecentSessionConversationTextOptions = {
   beforeTimestampMs?: number;
+  conversationRefs?: readonly string[];
   includeCronDirectDeliveryContext?: boolean;
   limit?: number;
   minTimestampMs?: number;
@@ -176,7 +181,8 @@ function parseAssistantTranscriptText(line: string): LatestAssistantTranscriptTe
 function extractRecentConversationText(
   event: TranscriptEvent,
   options: ReadRecentSessionConversationTextOptions = {},
-): SessionRecentConversationText | undefined {
+  applyRoleFilter = true,
+): ExtractedSessionRecentConversationText | undefined {
   const parsed = event as {
     id?: unknown;
     message?: unknown;
@@ -195,7 +201,7 @@ function extractRecentConversationText(
   if (
     !message ||
     (message.role !== "user" && message.role !== "assistant") ||
-    (options.role && message.role !== options.role)
+    (applyRoleFilter && options.role && message.role !== options.role)
   ) {
     return undefined;
   }
@@ -232,6 +238,18 @@ function extractRecentConversationText(
     message.provenance && typeof message.provenance === "object"
       ? (message.provenance as { sourceChannel?: unknown })
       : undefined;
+  const openclaw =
+    message.__openclaw && typeof message.__openclaw === "object"
+      ? (message.__openclaw as { transport?: unknown })
+      : undefined;
+  const transport =
+    openclaw?.transport && typeof openclaw.transport === "object"
+      ? (openclaw.transport as { conversationRef?: unknown })
+      : undefined;
+  const conversationRef =
+    typeof transport?.conversationRef === "string" && transport.conversationRef.trim()
+      ? transport.conversationRef.trim()
+      : undefined;
   return {
     ...(typeof parsed.id === "string" && parsed.id ? { id: parsed.id } : {}),
     role: message.role,
@@ -242,6 +260,19 @@ function extractRecentConversationText(
     ...(typeof provenance?.sourceChannel === "string" && provenance.sourceChannel.trim()
       ? { sourceChannel: provenance.sourceChannel.trim() }
       : {}),
+    ...(conversationRef ? { conversationRef } : {}),
+  };
+}
+
+function toSessionRecentConversationText(
+  entry: ExtractedSessionRecentConversationText,
+): SessionRecentConversationText {
+  return {
+    ...(entry.id ? { id: entry.id } : {}),
+    role: entry.role,
+    text: entry.text,
+    ...(entry.timestamp !== undefined ? { timestamp: entry.timestamp } : {}),
+    ...(entry.sourceChannel ? { sourceChannel: entry.sourceChannel } : {}),
   };
 }
 
@@ -251,6 +282,13 @@ async function readRecentUserAssistantTextFromSqliteTranscript(
 ): Promise<SessionRecentConversationText[]> {
   const limit = normalizeRecentTranscriptLimit(options.limit);
   const pageSize = 250;
+  const conversationScopeRequested = options.conversationRefs !== undefined;
+  const conversationRefs = new Set(
+    options.conversationRefs?.map((value) => value.trim()).filter(Boolean) ?? [],
+  );
+  if (conversationScopeRequested && conversationRefs.size === 0) {
+    return [];
+  }
   try {
     const readScope = {
       agentId: scope.agentId,
@@ -259,7 +297,8 @@ async function readRecentUserAssistantTextFromSqliteTranscript(
     };
     const { readRestoredSessionTranscript } = await import("./session-cold-storage-read.js");
     return await readRestoredSessionTranscript(readScope, () => {
-      const recent: SessionRecentConversationText[] = [];
+      const recent: ExtractedSessionRecentConversationText[] = [];
+      let pendingAssistants: ExtractedSessionRecentConversationText[] = [];
       for (let offset = 0; recent.length < limit; offset += pageSize) {
         const page = readSessionTranscriptMessageEventPage(readScope, {
           maxMessages: pageSize,
@@ -269,16 +308,38 @@ async function readRecentUserAssistantTextFromSqliteTranscript(
           break;
         }
         for (const event of page.events.toReversed()) {
-          const entry = extractRecentConversationText(event.event, options);
-          if (entry && isWithinTranscriptWindow(entry.timestamp, options)) {
+          const entry = extractRecentConversationText(
+            event.event,
+            options,
+            !conversationScopeRequested,
+          );
+          if (!entry || !isWithinTranscriptWindow(entry.timestamp, options)) {
+            continue;
+          }
+          if (!conversationScopeRequested) {
             recent.push(entry);
-            if (recent.length >= limit) {
-              break;
+          } else if (entry.role === "assistant") {
+            pendingAssistants.push(entry);
+            continue;
+          } else {
+            if (entry.conversationRef && conversationRefs.has(entry.conversationRef)) {
+              for (const assistant of pendingAssistants) {
+                if ((!options.role || options.role === "assistant") && recent.length < limit) {
+                  recent.push(assistant);
+                }
+              }
+              if ((!options.role || options.role === "user") && recent.length < limit) {
+                recent.push(entry);
+              }
             }
+            pendingAssistants = [];
+          }
+          if (recent.length >= limit) {
+            break;
           }
         }
       }
-      return recent.toReversed();
+      return recent.toReversed().map(toSessionRecentConversationText);
     });
   } catch (error) {
     if (isSessionTranscriptProjectionUnavailableError(error)) {

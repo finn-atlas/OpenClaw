@@ -266,6 +266,7 @@ async function processGoogleChatEvent(
       kind: isGroup ? "channel" : "direct",
       id: spaceId,
       label: fromLabel,
+      routePeer: isGroup ? undefined : { kind: "direct", id: spaceId },
     },
     route: {
       agentId: route.agentId,
@@ -285,6 +286,9 @@ async function processGoogleChatEvent(
       rawBody,
       commandBody: rawBody,
     },
+    sessionTranscript: isGroup
+      ? undefined
+      : { chatWindow: true, conversationScope: "current", historyLimit: 10 },
     media: media.length > 0 ? media : undefined,
     supplemental: {
       groupSystemPrompt: isGroup ? groupSystemPrompt : undefined,
