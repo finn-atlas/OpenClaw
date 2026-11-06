@@ -139,6 +139,19 @@ describe("admin automation management", () => {
     );
   });
 
+  it("reads targeted run history with admitted management authority", async () => {
+    await withAdminTool("channel-owner", async (tool, calls) => {
+      await expect(
+        tool.execute("run-history", {
+          action: "runs",
+          jobId,
+          runId: "run-1",
+        }),
+      ).resolves.toMatchObject({ details: { id: jobId } });
+      expect(calls).toEqual([["cron.runs", { id: jobId, runId: "run-1" }]]);
+    });
+  });
+
   it("visibly refuses unsupported next_check", async () => {
     await withAdminTool("unknown", async (tool, calls) => {
       await expect(tool.execute("unsupported", { action: "next_check", in: "1m" })).rejects.toThrow(
