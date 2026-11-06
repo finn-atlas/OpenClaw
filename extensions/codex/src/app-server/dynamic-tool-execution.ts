@@ -42,6 +42,11 @@ const CODEX_DYNAMIC_COMPUTER_GATEWAY_TIMEOUT_MS = 30_000;
 const CODEX_DYNAMIC_COMPUTER_COMPLETION_GRACE_MS = 30_000;
 const CODEX_DYNAMIC_IMAGE_TOOL_TIMEOUT_MS = 60_000;
 const CODEX_DYNAMIC_MESSAGE_TOOL_TIMEOUT_MS = 600_000;
+// The automations run tool waits up to timeoutMs for an outcome, then gives its
+// Gateway call a separate enqueue budget. The outer watchdog also needs its own
+// completion grace because it starts before the Gateway deadline is armed.
+const CODEX_DYNAMIC_AUTOMATIONS_RUN_DEFAULT_WAIT_MS = 60_000;
+const CODEX_DYNAMIC_AUTOMATIONS_RUN_GATEWAY_ENQUEUE_GRACE_MS = 60_000;
 /** Outer default for collector waits: full swarm budget plus completion grace. */
 const CODEX_DYNAMIC_AGENTS_WAIT_TOOL_TIMEOUT_MS =
   CODEX_DYNAMIC_TOOL_MAX_TIMEOUT_MS + CODEX_DYNAMIC_TOOL_TIMEOUT_SECONDS_GRACE_MS;
@@ -438,6 +443,23 @@ export function resolveDynamicToolCallTimeoutMs(params: {
   // watchdog must also cover bounded same-key reconciliation after that timer.
   if (params.call.tool === "message") {
     return CODEX_DYNAMIC_MESSAGE_TOOL_TIMEOUT_MS;
+  }
+  if (params.call.tool === "automations" && args?.action === "run") {
+    const requestedWaitMs = readDynamicToolCallTimeoutMs(params.call.arguments);
+    if (Object.hasOwn(args, "timeoutMs") && requestedWaitMs === undefined) {
+      // Invalid input still reaches the tool's validation under the ordinary watchdog.
+      return CODEX_DYNAMIC_TOOL_TIMEOUT_MS;
+    }
+    return addSafeTimeoutDelayGraceMs(
+      addSafeTimeoutDelayGraceMs(
+        Math.min(
+          requestedWaitMs ?? CODEX_DYNAMIC_AUTOMATIONS_RUN_DEFAULT_WAIT_MS,
+          CODEX_DYNAMIC_TOOL_MAX_TIMEOUT_MS,
+        ),
+        CODEX_DYNAMIC_AUTOMATIONS_RUN_GATEWAY_ENQUEUE_GRACE_MS,
+      ),
+      CODEX_DYNAMIC_TOOL_TIMEOUT_SECONDS_GRACE_MS,
+    );
   }
   // Collector waits need the full swarm budget plus grace for their structured timeout.
   const isCollectorWait = params.call.tool === "agents_wait";

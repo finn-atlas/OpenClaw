@@ -155,6 +155,59 @@ describe("dynamic tool execution helpers", () => {
     ).toBe(CODEX_DYNAMIC_MESSAGE_TOOL_TIMEOUT_MS);
   });
 
+  it("keeps the automation run watchdog outside its wait and completion grace", () => {
+    expect(resolveTimeout("automations", { action: "run" })).toBe(150_000);
+    expect(resolveTimeout("automations", { action: "run", timeoutMs: 120_000 })).toBe(210_000);
+    expect(resolveTimeout("automations", { action: "run", timeoutMs: 900_000 })).toBe(690_000);
+    expect(resolveTimeout("automations", { action: "runs", timeoutMs: 120_000 })).toBe(120_000);
+    expect(resolveTimeout("automations", { action: "run", timeoutMs: "invalid" })).toBe(
+      CODEX_DYNAMIC_TOOL_TIMEOUT_MS,
+    );
+    expect(
+      resolveDynamicToolServerRequestTimeoutMs({
+        ...dynamicCallContext,
+        callId: "call-automations-run",
+        tool: "automations",
+        arguments: { action: "run", timeoutMs: 600_000 },
+      }),
+    ).toBe(720_000);
+  });
+
+  it("lets an automation run settle at its Gateway deadline before the outer watchdog", async () => {
+    vi.useFakeTimers();
+    const requestedWaitMs = 120_000;
+    const gatewayDeadlineMs = requestedWaitMs + 60_000;
+    const call = {
+      ...dynamicCallContext,
+      callId: "call-automations-run-deadline",
+      tool: "automations",
+      arguments: { action: "run", timeoutMs: requestedWaitMs },
+    };
+    const completed: CodexDynamicToolCallResponse = {
+      success: true,
+      contentItems: [{ type: "inputText", text: "run outcome" }],
+    };
+    const onTimeout = vi.fn();
+    const response = handleDynamicToolCallWithTimeout({
+      call,
+      toolBridge: {
+        handleToolCall: () =>
+          new Promise<CodexDynamicToolCallResponse>((resolve) => {
+            setTimeout(() => resolve(completed), gatewayDeadlineMs);
+          }),
+      },
+      signal: new AbortController().signal,
+      timeoutMs: resolveDynamicToolCallTimeoutMs({ call, config: undefined }),
+      onTimeout,
+    });
+
+    await vi.advanceTimersByTimeAsync(gatewayDeadlineMs);
+
+    await expect(response).resolves.toEqual(completed);
+    expect(onTimeout).not.toHaveBeenCalled();
+    expect(vi.getTimerCount()).toBe(0);
+  });
+
   it("uses media image config and caps excessive dynamic tool timeouts", () => {
     expect(
       resolveTimeout(
