@@ -2340,6 +2340,19 @@ describe("handleDiscordGuildAction - channel management", () => {
     });
     expect(setChannelPermissionDiscord).not.toHaveBeenCalled();
   });
+
+  it("rejects an unsupported channel permission target type", async () => {
+    await expect(
+      handleGuildAction(
+        "channelPermissionSet",
+        { channelId: "C1", targetId: "R1", targetType: "user", allow: "1024" },
+        channelsEnabled,
+      ),
+    ).rejects.toThrow(/target type/);
+
+    expect(canManageGuildRoleDiscord).not.toHaveBeenCalled();
+    expect(setChannelPermissionDiscord).not.toHaveBeenCalled();
+  });
 });
 
 describe("handleDiscordModerationAction", () => {

@@ -105,6 +105,8 @@ const discordActionGroups: ReadonlyArray<{
       "category-create",
       "category-edit",
       "category-delete",
+      "channel-permission-set",
+      "channel-permission-remove",
     ],
   },
   { gate: "voiceStatus", actions: ["voice-status"] },

@@ -21,6 +21,22 @@ describe("applyTargetToParams", () => {
       field: "channelId",
       expected: "C123",
     },
+    {
+      params: {
+        action: "channel-permission-set",
+        args: { target: "  C456  " } as Record<string, unknown>,
+      },
+      field: "channelId",
+      expected: "C456",
+    },
+    {
+      params: {
+        action: "channel-permission-remove",
+        args: { target: "  C789  " } as Record<string, unknown>,
+      },
+      field: "channelId",
+      expected: "C789",
+    },
   ])("maps trimmed target into configured field for %j", ({ params, field, expected }) => {
     applyTargetToParams(params);
     expect(params.args[field]).toBe(expected);

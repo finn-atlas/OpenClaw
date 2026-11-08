@@ -37,6 +37,8 @@ function expectedDiscordActions(omitted: string[] = []): string[] {
     "category-create",
     "category-edit",
     "category-delete",
+    "channel-permission-set",
+    "channel-permission-remove",
     "voice-status",
     "event-list",
     "event-create",
@@ -110,6 +112,8 @@ describe("discordMessageActions", () => {
         "category-create",
         "category-edit",
         "category-delete",
+        "channel-permission-set",
+        "channel-permission-remove",
       ]),
     );
   });
@@ -134,7 +138,14 @@ describe("discordMessageActions", () => {
   });
 
   it("requires trusted requester sender for privileged guild admin actions from tool contexts", () => {
-    for (const action of ["channel-delete", "timeout", "kick", "ban"] as const) {
+    for (const action of [
+      "channel-delete",
+      "channel-permission-set",
+      "channel-permission-remove",
+      "timeout",
+      "kick",
+      "ban",
+    ] as const) {
       expect(
         discordMessageActions.requiresTrustedRequesterSender?.({
           action,

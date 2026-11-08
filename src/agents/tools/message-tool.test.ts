@@ -2388,6 +2388,10 @@ describe("message tool schema scoping", () => {
     { action: "voice-status", fields: ["guildId", "userId"] },
     { action: "timeout", fields: ["guildId", "userId", "durationMin", "until", "reason"] },
     { action: "thread-create", fields: ["messageId", "threadName", "channelId"] },
+    {
+      action: "channel-permission-set",
+      fields: ["channelId", "targetId", "targetType", "allow", "deny"],
+    },
   ])("keeps fields consumed by scoped $action handlers", ({ action, fields, descriptions }) => {
     const plugin = createChannelPlugin({ id: "test-channel", actions: [action] });
     registerPlugins(plugin);

@@ -148,6 +148,58 @@ describe("handleDiscordMessageAction", () => {
     });
   });
 
+  it("dispatches channel permission set and remove actions", async () => {
+    const cfg = discordConfig({ channels: true });
+    const target = { channelId: "channel-1", targetId: "role-1" };
+    await handleDiscordMessageAction({
+      action: "channel-permission-set",
+      params: { ...target, targetType: "role", allow: "1024" },
+      cfg,
+      senderIsOwner: true,
+    });
+    expectDiscordActionCall({
+      payload: {
+        action: "channelPermissionSet",
+        accountId: undefined,
+        ...target,
+        targetType: "role",
+        allow: "1024",
+        deny: undefined,
+      },
+      cfg,
+    });
+
+    handleDiscordActionMock.mockClear();
+    await handleDiscordMessageAction({
+      action: "channel-permission-remove",
+      params: target,
+      cfg,
+      senderIsOwner: true,
+    });
+    expectDiscordActionCall({
+      payload: { action: "channelPermissionRemove", accountId: undefined, ...target },
+      cfg,
+    });
+  });
+
+  it("rejects channel permission actions without a trusted Discord requester", async () => {
+    const cfg = discordConfig({ channels: true });
+    await expect(
+      handleDiscordMessageAction({
+        action: "channel-permission-set",
+        params: {
+          channelId: "channel-1",
+          targetId: "role-1",
+          targetType: "role",
+          allow: "1024",
+        },
+        cfg,
+      }),
+    ).rejects.toThrow("trusted Discord sender identity");
+
+    expect(handleDiscordActionMock).not.toHaveBeenCalled();
+  });
+
   it("rejects no-context Discord guild admin actions without owner trust", async () => {
     const cfg = discordConfig({ channels: true });
     await expect(
