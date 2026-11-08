@@ -714,3 +714,63 @@ describe("googlechat monitor direct messages", () => {
     expect(runArg?.adapter?.ingest?.().timestamp).toBeUndefined();
   });
 });
+
+describe("googlechat transport and session thread boundaries", () => {
+  it.each([
+    { kind: "SPACE", sessionThread: false, replyToMode: "all", split: false, transport: true },
+    { kind: "SPACE", sessionThread: true, replyToMode: "all", split: true, transport: true },
+    {
+      kind: "DIRECT_MESSAGE",
+      sessionThread: true,
+      replyToMode: "all",
+      split: false,
+      transport: true,
+    },
+    {
+      kind: "DIRECT_MESSAGE",
+      sessionThread: false,
+      replyToMode: "off",
+      split: false,
+      transport: false,
+    },
+  ] as const)(
+    "keeps transport separate from session identity: $kind $sessionThread $replyToMode",
+    async ({ kind, sessionThread, replyToMode, split, transport }) => {
+      const { buildContext, core } = createInboundClassificationHarness();
+      allowGoogleChatMediaSender();
+      const account = {
+        ...googleChatMediaTestAccount,
+        config: { typingIndicator: "none" as const, sessionThread, replyToMode },
+      };
+      for (const thread of ["first", "second"]) {
+        await processGoogleChatTestEvent({
+          account,
+          core,
+          event: {
+            type: "MESSAGE",
+            space: { name: "spaces/THREADS", spaceType: kind },
+            message: {
+              name: `spaces/THREADS/messages/${thread}`,
+              text: "hello",
+              thread: { name: `spaces/THREADS/threads/${thread}` },
+              sender: { name: "users/alice", type: "HUMAN" },
+            },
+          },
+        });
+      }
+      const first = buildContext.mock.calls[0]?.[0] as {
+        route: { routeSessionKey: string; dispatchSessionKey: string };
+        reply: { messageThreadId?: string };
+        extra: { TransportThreadId?: string };
+      };
+      const second = buildContext.mock.calls[1]?.[0] as typeof first;
+      expect(first.route.dispatchSessionKey === second.route.dispatchSessionKey).toBe(!split);
+      expect(first.route.routeSessionKey).toBe("session-1");
+      if (!split) expect(first.route.dispatchSessionKey).toBe("session-1");
+      expect(first.reply.messageThreadId).toBe(split ? "spaces/THREADS/threads/first" : undefined);
+      expect(first.extra.TransportThreadId).toBe(
+        transport ? "spaces/THREADS/threads/first" : undefined,
+      );
+    },
+  );
+});

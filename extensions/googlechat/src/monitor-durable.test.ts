@@ -9,7 +9,6 @@ describe("resolveGoogleChatDurableReplyOptions", () => {
         payload: { text: "hello", replyToId: "thread-1" },
         infoKind: "final",
         spaceId: "spaces/AAA",
-        hasTypingMessage: false,
       }),
     ).toEqual({
       to: "spaces/AAA",
@@ -24,23 +23,11 @@ describe("resolveGoogleChatDurableReplyOptions", () => {
         payload: { text: "hello" },
         infoKind: "final",
         spaceId: "spaces/AAA",
-        hasTypingMessage: false,
       }),
     ).toEqual({
       to: "spaces/AAA",
       replyToId: null,
     });
-  });
-
-  it("keeps typing preview delivery on the legacy edit path", () => {
-    expect(
-      resolveGoogleChatDurableReplyOptions({
-        payload: { text: "hello" },
-        infoKind: "final",
-        spaceId: "spaces/AAA",
-        hasTypingMessage: true,
-      }),
-    ).toBe(false);
   });
 
   it("does not durable-deliver non-final chunks", () => {
@@ -49,7 +36,6 @@ describe("resolveGoogleChatDurableReplyOptions", () => {
         payload: { text: "hello" },
         infoKind: "block",
         spaceId: "spaces/AAA",
-        hasTypingMessage: false,
       }),
     ).toBe(false);
   });

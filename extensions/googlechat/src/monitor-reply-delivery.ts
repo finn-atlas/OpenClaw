@@ -4,12 +4,7 @@ import { PlatformMessageNotDispatchedError } from "openclaw/plugin-sdk/error-run
 import { resolveSendableOutboundReplyParts } from "openclaw/plugin-sdk/reply-payload";
 import type { ReplyPayload } from "openclaw/plugin-sdk/reply-runtime";
 import type { ResolvedGoogleChatAccount } from "./accounts.js";
-import {
-  deleteGoogleChatMessage,
-  GoogleChatApiError,
-  sendGoogleChatMessage,
-  updateGoogleChatMessage,
-} from "./api.js";
+import { sendGoogleChatMessage } from "./api.js";
 import { formatGoogleChatTextChunks } from "./format.js";
 import type { GoogleChatCoreRuntime, GoogleChatRuntimeEnv } from "./monitor-types.js";
 
@@ -42,14 +37,10 @@ export async function deliverGoogleChatReply(params: {
   config: OpenClawConfig;
   statusSink?: (patch: { lastInboundAt?: number; lastOutboundAt?: number }) => void;
   typingMessage?: GoogleChatTypingMessage;
-  onTypingMessageClaimed?: () => void;
-  onTypingMessageRejected?: () => void;
   onTextDelivered?: (messageName: string) => void;
 }): Promise<void> {
   const { payload, account, spaceId, runtime, core, config, statusSink } = params;
-  // Clear this whenever the typing message is deleted or unavailable; otherwise
-  // text delivery can keep retrying a dead message and drop content.
-  let typingMessage = params.typingMessage;
+  const typingMessage = params.typingMessage;
   const replyThreadName = payload.replyToId?.trim() || undefined;
   const reply = resolveSendableOutboundReplyParts(payload);
   let deliveryThreadName = replyThreadName;
@@ -72,18 +63,7 @@ export async function deliverGoogleChatReply(params: {
       : typingMessage?.placement === "top-level"
         ? replyThreadName === undefined
         : false;
-  if (typingMessage && !typingMatchesReply) {
-    // Typing starts before reply directives are resolved. Never edit a placeholder
-    // from one thread into a final reply targeted at another conversation surface.
-    try {
-      await deleteGoogleChatMessage({ account, messageName: typingMessage.name });
-    } catch (err) {
-      runtime.error?.(`Google Chat typing cleanup failed: ${String(err)}`);
-    }
-    typingMessage = undefined;
-  } else if (typingMessage?.placement === "thread") {
-    // The requested thread decides whether the placeholder still belongs to this reply;
-    // the provider-returned thread owns every later physical send after fallback.
+  if (typingMatchesReply && typingMessage?.placement === "thread") {
     deliveryThreadName = typingMessage.deliveredThreadName;
   }
 
@@ -105,13 +85,6 @@ export async function deliverGoogleChatReply(params: {
         ? "Google Chat reply has no visible text after formatting."
         : undefined;
   if (rejection) {
-    try {
-      if (typingMessage) {
-        await deleteGoogleChatMessage({ account, messageName: typingMessage.name });
-      }
-    } catch (err) {
-      runtime.error?.(`Google Chat typing cleanup failed: ${String(err)}`);
-    }
     // Permanent policy rejection before any recipient-visible send; the typed
     // contract keeps delivery custody from recording a false ambiguous attempt.
     throw new PlatformMessageNotDispatchedError(rejection, { cause: undefined, retryable: false });
@@ -146,41 +119,6 @@ export async function deliverGoogleChatReply(params: {
   };
   for (const chunk of chunks) {
     if (!chunk) {
-      continue;
-    }
-    if (typingMessage) {
-      // A failed request may still edit the message. The turn must not delete it
-      // after an ambiguous receipt, because it could already contain the answer.
-      params.onTypingMessageClaimed?.();
-      try {
-        const updated = await updateGoogleChatMessage({
-          account,
-          messageName: typingMessage.name,
-          text: chunk,
-        });
-        const id = updated.messageName?.trim() || typingMessage.name;
-        acceptedText.push({ id, text: chunk });
-        params.onTextDelivered?.(id);
-      } catch (error) {
-        if (
-          error instanceof GoogleChatApiError &&
-          (error.status === 400 ||
-            error.status === 401 ||
-            error.status === 403 ||
-            error.status === 429)
-        ) {
-          // Explicit request or authorization rejection cannot have replaced the placeholder.
-          // Timeouts and other statuses may still represent an accepted edit.
-          params.onTypingMessageRejected?.();
-        }
-        if (!(error instanceof GoogleChatApiError) || error.status !== 404) {
-          throw error;
-        }
-        runtime.error?.(`Google Chat typing update failed: ${String(error)}`);
-        await sendTextMessage(chunk);
-      }
-      typingMessage = undefined;
-      recordOutboundStatus();
       continue;
     }
     await sendTextMessage(chunk);

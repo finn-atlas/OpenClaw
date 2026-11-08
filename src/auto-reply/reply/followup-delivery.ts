@@ -569,6 +569,16 @@ async function sendFollowupPayloads(params: {
             }`,
           );
         }
+        if (
+          result.ok &&
+          !result.ambiguous &&
+          !result.suppressed &&
+          sameChannelOrigin &&
+          params.kind === "final" &&
+          isReplyPayloadTerminalContent(payload)
+        ) {
+          await defaults.opts?.onObservedReplyDelivery?.();
+        }
         deliveredCrossChannelOrigin ||= crossChannelOrigin;
       }
     }
