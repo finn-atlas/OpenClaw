@@ -205,7 +205,7 @@ function buildCronToolDescription(params: { triggersEnabled: boolean }): string 
 
 ACTIONS: status | list (summaries; follow nextOffset) | get jobId (full details) | add job | update jobId job (partial; null clears) | remove jobId (operator removal requests active-run cancellation) | run jobId (runMode:"force"=now; waits up to timeoutMs, default 60s; unfinished runs return runId) | runs jobId runId? (history) | next_check in:"30m" (own paced run) | wake text (caller-owned session; mode defaults to next-heartbeat). Check unfinished runs later with runs, never a scheduled verification job. wake has no delay; for a later resume use an at job below.
 
-SCOPE: Authenticated configured channel owners and Control UI administrators can manage any Gateway automation. Other turns see caller-visible jobs and scoped counts only: an empty list or failed list/get/update/remove (including not-found) does not establish global absence, even for IDs from your history. Never recreate or replace a known automation for update/remove/reconciliation based on these results; report the visibility limit and ask an authorized administrator to check through a fresh authenticated owner/administrator turn or the Automations page. New requested automations may still be created.
+SCOPE: Authenticated configured channel owners and Control UI administrators can manage any Gateway automation. Other turns see caller-visible jobs and scoped counts only: an empty list or failed list/get/runs/update/remove (including not-found) does not establish global absence, even for IDs from your history. Never recreate or replace a known automation for update/remove/reconciliation based on these results; report the visibility limit and ask an authorized administrator to check through a fresh authenticated owner/administrator turn or the Automations page. New requested automations may still be created.
 
 ADD: job requires schedule+payload.
 
@@ -251,7 +251,7 @@ export function createCronTool(opts?: CronToolOptions, deps?: CronToolDeps): Any
         ? "Inspect or remove only the current automation. Actions: list [includeDisabled], get jobId, remove jobId. Use the current job ID; other jobs and management actions are unavailable."
         : 'Inspect or remove only the current automation. Actions: status; list [includeDisabled]; get/runs/remove jobId; next_check in:"15m" for this paced run. Use the current job ID. To stop a finished job, remove it; creating/updating/running jobs and waking sessions are unavailable. Return the task result; the scheduler owns delivery.'
       : managementAuthority?.managementOnly
-        ? 'Manage any existing automation on this Gateway with the admitted automation management authority. Actions: list [includeDisabled,limit,offset] (compact summaries with timing; follow nextOffset); get jobId (full schedule, payload, and delivery details); update jobId job (partial patch, null clears); run jobId (runMode:"force" runs now; waits up to timeoutMs, default 60s, and returns the finished run, or its runId if still running); remove jobId (operator removal requests cancellation of an active run; the result reports activeRunCancellationRequested:true). Creator attribution and scheduled execution policy stay intact. Use the Automations page for other actions.'
+        ? 'Manage any existing automation on this Gateway with the admitted automation management authority. Actions: list [includeDisabled,limit,offset] (compact summaries with timing; follow nextOffset); get jobId (full schedule, payload, and delivery details); runs jobId runId? (targeted history); update jobId job (partial patch, null clears); run jobId (runMode:"force" runs now; waits up to timeoutMs, default 60s, and returns the finished run, or its runId if still running); remove jobId (operator removal requests cancellation of an active run; the result reports activeRunCancellationRequested:true). Creator attribution and scheduled execution policy stay intact. Use the Automations page for other actions.'
         : buildCronToolDescription({ triggersEnabled }),
     outputSchema: CronToolOutputSchema,
     parameters: createCronToolSchema({
@@ -300,7 +300,7 @@ export function createCronTool(opts?: CronToolOptions, deps?: CronToolDeps): Any
         !CRON_MANAGEMENT_METHODS.some((method) => method === `cron.${action}`)
       ) {
         throw new Error(
-          "This turn can only list, get, update, run, or remove automations. Use the Automations page for other actions.",
+          "This turn can only list, get, read runs, update, run, or remove automations. Use the Automations page for other actions.",
         );
       }
       assertCronSelfRemoveScope(opts, action, params);
@@ -655,14 +655,11 @@ export function createCronTool(opts?: CronToolOptions, deps?: CronToolDeps): Any
             if (result.enqueued !== true || result.run) {
               return jsonResult(result);
             }
-            const followUp = managementAuthority?.managementOnly
-              ? "check it later on the Automations page"
-              : "check it later with runs jobId runId";
             return jsonResult({
               ...result,
               note: result.finished
-                ? `Finished, but its run history is not visible to this turn (a one-shot may have deleted itself after succeeding); ${followUp} if needed.`
-                : `Not finished yet: it is still running, or it runs in this session and starts after this turn. Its delivery follows the job settings; ${followUp}. Do not schedule a verification job.`,
+                ? "Finished, but its run history is not visible to this turn (a one-shot may have deleted itself after succeeding); check it later with runs jobId runId if needed."
+                : "Not finished yet: it is still running, or it runs in this session and starts after this turn. Its delivery follows the job settings; check it later with runs jobId runId. Do not schedule a verification job.",
             });
           }
           case "next_check": {

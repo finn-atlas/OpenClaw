@@ -53,11 +53,16 @@ export const cronRunsHandler: GatewayRequestHandler = async (options) => {
         ? await context.cron.list({ includeDisabled: true })
         : [await context.cron.readJob(jobId!)].filter((job) => job !== undefined);
     const storeKey = cronStoreKey(context.cronStorePath);
-    await visibilityRead.prepare();
+    const initialCallerScope = readCronCallerScope(client);
+    if (initialCallerScope?.manageAll) {
+      initialCallerScope.manageAll();
+    } else {
+      await visibilityRead.prepare();
+    }
     const resolvePageOptions = (): ReadCronRunHistoryPageOptions | undefined => {
-      const visibility = visibilityRead.resolve();
       const defaultAgentId = context.cron.getDefaultAgentId();
       const callerScope = readCronCallerScope(client);
+      const visibility = callerScope?.manageAll ? undefined : visibilityRead.resolve();
       if (scope === "all") {
         if (callerScope) {
           throw new Error("Cron history scope changed; retry the request");

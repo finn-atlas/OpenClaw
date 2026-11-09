@@ -313,6 +313,7 @@ describe("cron method validation", () => {
   it.each([
     ["cron.list", false, "channel-owner", true],
     ["cron.get", false, "channel-owner", true],
+    ["cron.runs", false, "channel-owner", true],
     ["cron.update", false, "channel-owner", false],
     ["cron.run", false, "channel-owner", true],
     ["cron.remove", true, "control-ui-admin", true],
