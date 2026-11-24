@@ -592,7 +592,8 @@ describe("Git checkout discovery", () => {
       await requireGit(repo, ["symbolic-ref", "refs/heads/alias-middle", "refs/heads/linked"]);
       await requireGit(repo, ["symbolic-ref", "refs/heads/alias", "refs/heads/alias-middle"]);
       await requireGit(linked, ["symbolic-ref", "HEAD", "refs/heads/alias"]);
-      await requireGit(repo, ["worktree", "lock", "--reason", "held by test", linked]);
+      const lockedReason = 'held\n\t"café';
+      await requireGit(repo, ["worktree", "lock", "--reason", lockedReason, linked]);
 
       // These fixtures exist; compare identity without imposing Git's separator spelling.
       const worktrees = await listGitWorktrees(repo);
@@ -604,7 +605,7 @@ describe("Git checkout discovery", () => {
           { path: await fs.realpath(repo), branch: "refs/heads/main", head: initialHead },
           {
             path: await fs.realpath(linked),
-            lockedReason: "held by test",
+            lockedReason,
             branch: "refs/heads/linked",
             head: linkedHead,
           },
